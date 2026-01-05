@@ -201,10 +201,10 @@ export default function App() {
               if (c.imageUrl) refImages.push(c.imageUrl);
           });
 
-          // 3. Generate Image (9:16)
+          // 3. Generate Image (3:4)
           const imageUrl = await GeminiService.generateImage(
               prompt,
-              AspectRatio.MOBILE,
+              AspectRatio.PORTRAIT,
               ImageSize.K1,
               refImages,
               storyData.visualStyleGuide,

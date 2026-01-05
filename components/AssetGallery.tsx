@@ -41,13 +41,13 @@ const AssetGallery: React.FC<AssetGalleryProps> = ({
            <Book className="w-6 h-6 text-indigo-400" />
            <div>
                <h2 className="text-xl font-bold text-white">Story Cover Art</h2>
-               <p className="text-xs text-slate-400">The face of your Webtoon. Vertical 9:16 Format.</p>
+               <p className="text-xs text-slate-400">The face of your Webtoon. Vertical 3:4 Format.</p>
            </div>
         </div>
 
         <div className="flex flex-col md:flex-row gap-8 items-start">
-             {/* Cover Image Container (9:16 aspect ratio) */}
-             <div className="w-full md:w-64 shrink-0 aspect-[9/16] bg-slate-950 rounded-xl overflow-hidden border-2 border-slate-700 relative shadow-2xl group hover:border-indigo-500 transition-colors">
+             {/* Cover Image Container (3:4 aspect ratio) */}
+             <div className="w-full md:w-64 shrink-0 aspect-[3/4] bg-slate-950 rounded-xl overflow-hidden border-2 border-slate-700 relative shadow-2xl group hover:border-indigo-500 transition-colors">
                  {cover?.imageUrl ? (
                      <img src={cover.imageUrl} alt="Story Cover" className="w-full h-full object-cover" />
                  ) : (

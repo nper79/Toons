@@ -60,7 +60,7 @@ export const generateCoverPrompt = async (
         model: MODEL_TEXT_ANALYSIS,
         contents: `
         You are an Art Director for a top Webtoon/Manhwa platform.
-        Create a prompt for the **COVER ART** (Vertical 9:16).
+        Create a prompt for the **COVER ART** (Vertical 3:4).
         
         **STORY DETAILS**:
         Title: ${title}
