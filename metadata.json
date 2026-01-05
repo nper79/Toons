@@ -1,0 +1,5 @@
+{
+  "name": "Lingotoons",
+  "description": "An AI-powered storyboard creator that turns text stories into visual assets and scenes using Gemini models.",
+  "requestFramePermissions": []
+}
