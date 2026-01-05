@@ -1,25 +1,29 @@
 
 import React from 'react';
-import { Users, Map, RefreshCw, Wand2, Grid, CheckCircle2, Upload, Image as ImageIcon } from 'lucide-react';
+import { Users, Map, RefreshCw, Wand2, Grid, CheckCircle2, Upload, Image as ImageIcon, Book } from 'lucide-react';
 import { Character, Setting } from '../types';
 
 interface AssetGalleryProps {
   characters: Character[];
   settings: Setting[];
+  cover?: { imageUrl?: string; isGenerating?: boolean }; // NEW
   onGenerateCharacter: (id: string) => void;
   onGenerateSetting: (id: string) => void;
-  onUploadAsset: (type: 'character' | 'setting', id: string, file: File) => void;
+  onGenerateCover: () => void; // NEW
+  onUploadAsset: (type: 'character' | 'setting' | 'cover', id: string, file: File) => void; // Updated
 }
 
 const AssetGallery: React.FC<AssetGalleryProps> = ({ 
   characters, 
   settings, 
+  cover,
   onGenerateCharacter, 
   onGenerateSetting,
+  onGenerateCover,
   onUploadAsset
 }) => {
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, type: 'character' | 'setting', id: string) => {
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, type: 'character' | 'setting' | 'cover', id: string) => {
     const file = e.target.files?.[0];
     if (file) {
         onUploadAsset(type, id, file);
@@ -30,6 +34,79 @@ const AssetGallery: React.FC<AssetGalleryProps> = ({
 
   return (
     <div className="space-y-12">
+      
+      {/* NEW: Story Cover Section */}
+      <section className="bg-gradient-to-r from-indigo-900/20 to-slate-900/50 p-6 rounded-2xl border border-indigo-500/20">
+        <div className="flex items-center gap-3 mb-6">
+           <Book className="w-6 h-6 text-indigo-400" />
+           <div>
+               <h2 className="text-xl font-bold text-white">Story Cover Art</h2>
+               <p className="text-xs text-slate-400">The face of your Webtoon. Vertical 9:16 Format.</p>
+           </div>
+        </div>
+
+        <div className="flex flex-col md:flex-row gap-8 items-start">
+             {/* Cover Image Container (9:16 aspect ratio) */}
+             <div className="w-full md:w-64 shrink-0 aspect-[9/16] bg-slate-950 rounded-xl overflow-hidden border-2 border-slate-700 relative shadow-2xl group hover:border-indigo-500 transition-colors">
+                 {cover?.imageUrl ? (
+                     <img src={cover.imageUrl} alt="Story Cover" className="w-full h-full object-cover" />
+                 ) : (
+                     <div className="w-full h-full flex flex-col items-center justify-center text-slate-600 p-6 text-center">
+                         <ImageIcon className="w-12 h-12 mb-2 opacity-20" />
+                         <p className="text-xs font-bold uppercase tracking-widest">No Cover</p>
+                     </div>
+                 )}
+
+                 {cover?.isGenerating && (
+                    <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center backdrop-blur-sm gap-2">
+                        <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                        <span className="text-[10px] font-bold text-indigo-400 animate-pulse uppercase tracking-widest">Designing...</span>
+                    </div>
+                 )}
+             </div>
+
+             {/* Actions */}
+             <div className="flex-1 space-y-4">
+                 <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50">
+                     <h3 className="text-sm font-bold text-white mb-2">Automated Cover Design</h3>
+                     <p className="text-xs text-slate-400 leading-relaxed mb-4">
+                         The AI will analyze your story title, summary, and existing character designs to create a high-impact, vertical cover art suitable for Webtoon platforms. 
+                         <br/><br/>
+                         <span className="text-indigo-400 font-bold">NOTE:</span> The AI is instructed NOT to generate text. You should add your logo/typography in post-production.
+                     </p>
+                     
+                     <div className="flex gap-3">
+                        <button
+                            onClick={onGenerateCover}
+                            disabled={cover?.isGenerating}
+                            className="px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold rounded-lg flex items-center gap-2 transition-all disabled:opacity-50 shadow-lg shadow-indigo-500/20"
+                        >
+                            <Wand2 className="w-4 h-4" />
+                            {cover?.imageUrl ? 'Regenerate Cover' : 'Generate Cover'}
+                        </button>
+
+                        <div className="relative">
+                            <input 
+                                type="file" 
+                                id="upload-cover" 
+                                accept="image/*" 
+                                className="hidden" 
+                                onChange={(e) => handleFileChange(e, 'cover', 'main-cover')}
+                            />
+                            <label 
+                                htmlFor="upload-cover"
+                                className="px-6 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-sm font-bold rounded-lg flex items-center gap-2 transition-all cursor-pointer border border-slate-600"
+                            >
+                                <Upload className="w-4 h-4" />
+                                Upload Manually
+                            </label>
+                        </div>
+                     </div>
+                 </div>
+             </div>
+        </div>
+      </section>
+
       {/* Characters Section */}
       <section>
         <div className="flex items-center gap-3 mb-6">

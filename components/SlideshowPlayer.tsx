@@ -3,19 +3,24 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Play, ChevronDown, Layout, CheckCircle, GitBranch, Volume2, VolumeX } from 'lucide-react';
 import { StorySegment } from '../types';
+import InteractiveText from './InteractiveText';
 
 interface SlideshowPlayerProps {
   segments: StorySegment[];
   onClose: () => void;
   onPlayAudio: (segmentId: string, text: string) => Promise<void>;
   onStopAudio: () => void;
+  nativeLanguage?: string; // Passed from story data
+  learningLanguage?: string; // Passed to determine text rendering strategy
 }
 
 const SlideshowPlayer: React.FC<SlideshowPlayerProps> = ({
   segments,
   onClose,
   onPlayAudio,
-  onStopAudio
+  onStopAudio,
+  nativeLanguage = "English",
+  learningLanguage
 }) => {
   const [hasStarted, setHasStarted] = useState(false);
   const [activeSegmentId, setActiveSegmentId] = useState<string | null>(null);
@@ -100,15 +105,15 @@ const SlideshowPlayer: React.FC<SlideshowPlayerProps> = ({
               <div className="w-24 h-24 bg-indigo-600 rounded-[2.5rem] flex items-center justify-center shadow-[0_0_80px_rgba(79,70,229,0.3)] mb-10 transform rotate-6 hover:rotate-0 transition-transform duration-500">
                   <Play className="w-10 h-10 fill-current ml-1" />
               </div>
-              <h2 className="text-4xl font-black mb-4 tracking-tighter uppercase italic">Webtoon strip</h2>
+              <h2 className="text-4xl font-black mb-4 tracking-tighter uppercase italic">Lingotoons Reader</h2>
               <p className="text-slate-400 text-sm leading-relaxed mb-12 font-medium px-4">
-                Free-scroll mode. Stop anywhere, pan at your own pace. The story flows continuously as you glide down.
+                Immersive Language Learning. Click any word in the story to see its translation in {nativeLanguage}.
               </p>
               <button 
                 onClick={() => setHasStarted(true)}
                 className="w-full bg-white text-black font-black py-5 rounded-2xl hover:bg-indigo-500 hover:text-white transition-all transform active:scale-95 shadow-[0_20px_40px_rgba(255,255,255,0.1)] uppercase tracking-widest text-sm"
               >
-                  Begin Journey
+                  Start Reading
               </button>
           </div>
       </div>, document.body
@@ -199,26 +204,34 @@ const SlideshowPlayer: React.FC<SlideshowPlayerProps> = ({
       </div>
 
       {/* Floating Interactive Narrator Layer */}
-      <div className="absolute bottom-0 left-0 right-0 z-40 pointer-events-none flex flex-col items-center pb-12 px-6">
+      <div className="absolute bottom-0 left-0 right-0 z-40 pointer-events-none flex flex-col items-center pb-8 px-4">
           
-          {/* Dynamic Floating Caption */}
+          {/* Dynamic Floating Caption with INTERACTIVE TEXT */}
           {currentPanelData.caption && (
-              <div className="w-full max-w-md bg-black/80 backdrop-blur-2xl border border-white/10 px-10 py-8 rounded-[2.5rem] shadow-[0_30px_60px_rgba(0,0,0,0.8)] animate-slide-up pointer-events-auto border-b-indigo-500/50">
-                   <p className="text-xl md:text-2xl font-serif text-white leading-relaxed text-center italic font-medium">
-                        "{currentPanelData.caption}"
-                   </p>
+              <div className="w-full max-w-sm bg-black/80 backdrop-blur-2xl border border-white/10 px-6 py-5 rounded-3xl shadow-[0_30px_60px_rgba(0,0,0,0.8)] animate-slide-up pointer-events-auto border-b-indigo-500/50">
+                   <div className="text-lg md:text-xl font-serif text-white leading-relaxed text-center italic font-medium">
+                        <InteractiveText 
+                            text={currentPanelData.caption} 
+                            tokens={activeSeg?.tokens} 
+                            nativeLanguage={nativeLanguage} 
+                            learningLanguage={learningLanguage} // Pass prop
+                        />
+                   </div>
+                   <div className="text-[9px] text-center text-indigo-400 mt-2 uppercase tracking-widest font-sans opacity-50">
+                        Tap words for translation
+                   </div>
               </div>
           )}
           
           {/* Choice Gate: If the current panel has choices, show them floating above */}
           {activeBeatIndex === 3 && activeSeg?.choices && activeSeg.choices.length > 0 && (
-              <div className="w-full max-w-md mt-6 animate-fade-in pointer-events-auto">
-                   <div className="bg-slate-900/95 backdrop-blur-3xl border border-indigo-500/30 rounded-[2rem] p-6 shadow-2xl">
-                        <div className="flex items-center gap-2 mb-6 opacity-60">
-                             <GitBranch className="w-4 h-4 text-indigo-400" />
-                             <span className="text-[10px] font-black tracking-widest uppercase">Path Selection</span>
+              <div className="w-full max-w-sm mt-4 animate-fade-in pointer-events-auto">
+                   <div className="bg-slate-900/95 backdrop-blur-3xl border border-indigo-500/30 rounded-2xl p-4 shadow-2xl">
+                        <div className="flex items-center gap-2 mb-3 opacity-60">
+                             <GitBranch className="w-3 h-3 text-indigo-400" />
+                             <span className="text-[10px] font-black tracking-widest uppercase">Select Path</span>
                         </div>
-                        <div className="space-y-3">
+                        <div className="space-y-2">
                             {activeSeg.choices.map((choice, i) => (
                                 <button 
                                     key={i}
@@ -231,10 +244,14 @@ const SlideshowPlayer: React.FC<SlideshowPlayerProps> = ({
                                             });
                                         }
                                     }}
-                                    className="w-full text-left p-5 bg-white/5 hover:bg-white text-white hover:text-black rounded-2xl border border-white/10 transition-all font-bold text-sm flex justify-between items-center group"
+                                    className="w-full text-left p-3 bg-white/5 hover:bg-white text-white hover:text-black rounded-xl border border-white/10 transition-all font-bold text-xs flex justify-between items-center group"
                                 >
-                                    {choice.text}
-                                    <ChevronDown className="w-4 h-4 -rotate-90 opacity-0 group-hover:opacity-100 transition-all" />
+                                    <InteractiveText 
+                                        text={choice.text} 
+                                        nativeLanguage={nativeLanguage}
+                                        learningLanguage={learningLanguage} // Pass prop
+                                    />
+                                    <ChevronDown className="w-3 h-3 -rotate-90 opacity-0 group-hover:opacity-100 transition-all" />
                                 </button>
                             ))}
                         </div>

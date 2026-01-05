@@ -1,4 +1,5 @@
 
+
 export enum ProcessingStatus {
   IDLE = 'IDLE',
   ANALYZING = 'ANALYZING',
@@ -75,6 +76,7 @@ export enum SegmentType {
 export interface StorySegment {
   id: string;
   text: string; 
+  tokens?: string[]; // NEW: Semantic breakdown for Asian languages (["私", "は"] for "私は")
   settingId: string;
   characterIds: string[];
   
@@ -101,8 +103,18 @@ export interface StorySegment {
 export interface StoryData {
   title: string;
   artStyle: string;
+  learningLanguage: string; 
+  nativeLanguage: string;   
   visualStyleGuide: string; 
   cinematicDNA: CinematicDNA; 
+  
+  // NEW: Cover Art Data
+  cover?: {
+    imageUrl?: string;
+    visualPrompt?: string;
+    isGenerating?: boolean;
+  };
+
   segments: StorySegment[];
   characters: Character[];
   settings: Setting[];

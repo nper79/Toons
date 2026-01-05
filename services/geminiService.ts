@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type, Modality } from "@google/genai";
-import { StoryData, AspectRatio, ImageSize, ManhwaPanel } from "../types";
+import { StoryData, AspectRatio, ImageSize, ManhwaPanel, StorySegment } from "../types";
 
 const getAi = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
 
@@ -45,6 +45,142 @@ export const playAudio = async (audioData: ArrayBuffer): Promise<void> => {
     audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
     audio.play();
   });
+};
+
+// NEW: Generate a prompt specifically for the Cover Art
+export const generateCoverPrompt = async (
+    title: string,
+    characters: any[],
+    summary: string,
+    style: string
+): Promise<string> => {
+    const ai = getAi();
+    
+    const response = await ai.models.generateContent({
+        model: MODEL_TEXT_ANALYSIS,
+        contents: `
+        You are an Art Director for a top Webtoon/Manhwa platform.
+        Create a prompt for the **COVER ART** (Vertical 9:16).
+        
+        **STORY DETAILS**:
+        Title: ${title}
+        Characters: ${characters.map(c => c.name + " (" + c.description + ")").join(', ')}
+        Summary Snippet: ${summary.slice(0, 500)}...
+        
+        **REQUIREMENTS**:
+        1. COMPOSITION: Dynamic, eye-catching, high contrast. Vertical layout.
+        2. SUBJECT: Feature the protagonist(s) prominently.
+        3. STYLE: ${style}. Masterpiece, 8k resolution, highly detailed.
+        4. CRITICAL: **NO TEXT**. The image must be clean art. No title text, no speech bubbles.
+        
+        Return ONLY the visual prompt string.
+        `,
+    });
+    return response.text || "";
+};
+
+// NEW: Translate segments on the fly for the Reader
+export const translateSegments = async (segments: StorySegment[], targetLanguage: string): Promise<StorySegment[]> => {
+  const ai = getAi();
+  
+  // Prepare a simplified payload to save tokens
+  const textPayload = segments.map(s => ({ 
+      id: s.id, 
+      text: s.text, 
+      captions: s.panels?.map(p => p.caption) || [],
+      choices: s.choices?.map(c => c.text) || []
+  }));
+
+  const schema = {
+    type: Type.OBJECT,
+    properties: {
+      translations: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            id: { type: Type.STRING },
+            translatedText: { type: Type.STRING, description: "Natural translation suitable for a comic. NO artificial spaces for Japanese/Chinese." },
+            tokenizedText: { 
+                type: Type.ARRAY, 
+                items: { type: Type.STRING },
+                description: "Array of individual semantic words/tokens. For Japanese: ['私', 'は', '学生', 'です']. For English: ['I', 'am', 'a', 'student']." 
+            },
+            translatedCaptions: { type: Type.ARRAY, items: { type: Type.STRING } },
+            translatedChoices: { type: Type.ARRAY, items: { type: Type.STRING } }
+          },
+          required: ["id", "translatedText", "tokenizedText", "translatedCaptions"]
+        }
+      }
+    },
+    required: ["translations"]
+  };
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-flash-preview',
+    contents: `Translate the following narrative content into ${targetLanguage}. 
+    
+    **TOKENIZATION RULE FOR ASIAN LANGUAGES (Japanese, Chinese, Thai)**:
+    1. 'translatedText': Must look NATURAL. Do **NOT** add spaces between words. (e.g., "私は学生です")
+    2. 'tokenizedText': Provide the array of individual clickable words. (e.g., ["私", "は", "学生", "です"])
+    
+    For alphabetic languages (English, Spanish), 'translatedText' and 'tokenizedText' logic is standard (spaces in text, words in array).
+    
+    CONTENT: ${JSON.stringify(textPayload)}`,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: schema
+    }
+  });
+
+  const result = JSON.parse(response.text || "{}");
+  const translations = result.translations || [];
+
+  // Merge translations back into segments
+  return segments.map(segment => {
+    const trans = translations.find((t: any) => t.id === segment.id);
+    if (!trans) return segment;
+
+    return {
+        ...segment,
+        text: trans.translatedText,
+        tokens: trans.tokenizedText, // Store the tokens for the UI
+        panels: segment.panels.map((p, idx) => ({
+            ...p,
+            caption: trans.translatedCaptions[idx] || p.caption
+        })),
+        choices: segment.choices?.map((c, idx) => ({
+            ...c,
+            text: trans.translatedChoices?.[idx] || c.text
+        }))
+    };
+  });
+};
+
+// NEW: Interactive Dictionary Feature
+export const getWordDefinition = async (word: string, contextSentence: string, targetLanguage: string): Promise<{ definition: string, pronunciation?: string }> => {
+  const ai = getAi();
+  
+  const schema = {
+    type: Type.OBJECT,
+    properties: {
+      definition: { type: Type.STRING, description: `The meaning of the word '${word}' in the language ${targetLanguage}, considering the context.` },
+      pronunciation: { type: Type.STRING, description: "Phonetic pronunciation if applicable." }
+    },
+    required: ["definition"]
+  };
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-flash-preview',
+    contents: `Define the word "${word}" found in this sentence: "${contextSentence}". 
+    Translate the definition into ${targetLanguage}. Keep it concise (under 20 words).`,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: schema
+    }
+  });
+
+  return JSON.parse(response.text || "{}");
 };
 
 export const regeneratePanelPrompts = async (
@@ -163,7 +299,7 @@ export const analyzeStoryText = async (storyText: string, artStyle: string): Pro
           type: Type.OBJECT,
           properties: {
             id: { type: Type.STRING },
-            text: { type: Type.STRING },
+            text: { type: Type.STRING, description: "Original narrative text." },
             type: { type: Type.STRING, enum: ['MAIN', 'BRANCH', 'MERGE_POINT'] },
             choices: {
                 type: Type.ARRAY,
