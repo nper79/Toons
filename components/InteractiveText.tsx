@@ -26,9 +26,13 @@ const InteractiveText: React.FC<InteractiveTextProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const handleWordClick = async (e: React.MouseEvent<HTMLSpanElement>, word: string) => {
+  const handleWordClick = async (e: React.MouseEvent<HTMLSpanElement>, rawWord: string) => {
     e.stopPropagation();
-    if (!word || !word.trim()) return;
+    if (!rawWord || !rawWord.trim()) return;
+
+    // Normalize the word: Remove common punctuation (Western & Asian) to match cache keys
+    const cleanWord = rawWord.replace(/[.,!?;:"“’'”()\-\[\]。、！ ？「」（）]+/g, "").trim();
+    if (!cleanWord) return;
 
     const rect = (e.target as HTMLElement).getBoundingClientRect();
     
@@ -36,28 +40,42 @@ const InteractiveText: React.FC<InteractiveTextProps> = ({
     const x = rect.left + (rect.width / 2);
     const y = rect.top;
 
-    setIsLoading(true);
-    setSelectedWord({ word, definition: "Loading...", x, y });
+    // 1. Check Global Cache First (Synchronous)
+    // Try exact match first, then lowercase
+    let cached = null;
+    if (vocabulary) {
+        if (vocabulary[cleanWord] && vocabulary[cleanWord][nativeLanguage]) {
+            cached = vocabulary[cleanWord][nativeLanguage];
+        } else {
+             // Try searching case-insensitive if exact match fails
+             const lower = cleanWord.toLowerCase();
+             if (vocabulary[lower] && vocabulary[lower][nativeLanguage]) {
+                 cached = vocabulary[lower][nativeLanguage];
+             }
+        }
+    }
 
-    try {
-      // 1. Check Global Cache First
-      if (vocabulary && vocabulary[word] && vocabulary[word][nativeLanguage]) {
-          const cached = vocabulary[word][nativeLanguage];
-          setSelectedWord({ 
-            word, 
+    if (cached) {
+        // Immediate render without loading state
+        setSelectedWord({ 
+            word: cleanWord, 
             definition: cached.definition, 
             pronunciation: cached.pronunciation,
             x, 
             y 
-          });
-          setIsLoading(false);
-          return;
-      }
+        });
+        setIsLoading(false);
+        return;
+    }
 
-      // 2. Fallback to API
-      const result = await getWordDefinition(word, text, nativeLanguage);
+    // 2. Fallback to API (Async)
+    setIsLoading(true);
+    setSelectedWord({ word: cleanWord, definition: "Loading...", x, y });
+
+    try {
+      const result = await getWordDefinition(cleanWord, text, nativeLanguage);
       setSelectedWord({ 
-        word, 
+        word: cleanWord, 
         definition: result.definition, 
         pronunciation: result.pronunciation,
         x, 
@@ -82,10 +100,10 @@ const InteractiveText: React.FC<InteractiveTextProps> = ({
 
   // RENDER LOGIC
   // Only use explicit tokens for languages that DO NOT use spaces (Japanese, Chinese, Thai).
-  // For languages like Czech, English, etc., we rely on standard space-based splitting 
-  // to ensure proper visual formatting.
+  // For languages like Czech, English, etc., we rely on standard space-based splitting.
   const isSpacelessLanguage = learningLanguage && ['Japanese', 'Chinese', 'Thai'].some(l => learningLanguage.includes(l));
 
+  // 1. Use Explicit AI Tokens (Best Quality)
   if (isSpacelessLanguage && tokens && tokens.length > 0) {
       return (
         <>
@@ -95,7 +113,7 @@ const InteractiveText: React.FC<InteractiveTextProps> = ({
                         key={index}
                         onClick={(e) => handleWordClick(e, token)}
                         className="cursor-pointer hover:bg-indigo-500/30 hover:text-indigo-200 transition-colors inline-block"
-                        style={{ margin: 0, padding: 0 }} // Ensure no accidental spacing for these languages
+                        style={{ margin: 0, padding: 0 }} 
                     >
                         {token}
                     </span>
@@ -106,24 +124,42 @@ const InteractiveText: React.FC<InteractiveTextProps> = ({
       );
   }
 
-  // Fallback / Standard Logic (Western languages)
-  // Split text into words but preserve punctuation
-  const words = text.split(/(\s+)/);
+  // 2. Fallback: Determine words based on language
+  let words: string[] = [];
+  
+  // Use Browser Native Segmenter for CJK if explicit tokens are missing (e.g. Captions)
+  if (isSpacelessLanguage && typeof Intl !== 'undefined' && (Intl as any).Segmenter) {
+      try {
+          const segmenter = new (Intl as any).Segmenter(learningLanguage === 'Japanese' ? 'ja' : 'zh', { granularity: 'word' });
+          const segments = segmenter.segment(text);
+          words = Array.from(segments).map((s: any) => s.segment);
+      } catch (e) {
+          words = text.split(/(\s+)/); // Last resort
+      }
+  } else {
+      // Standard split for Western languages
+      words = text.split(/(\s+)/);
+  }
 
   return (
     <>
       <div ref={containerRef} className={`${className} leading-relaxed`}>
         {words.map((segment, index) => {
-           // Use unicode-aware regex to filter out punctuation
-           const isWord = segment.trim().length > 0 && !/^[\p{P}\p{S}\s]+$/u.test(segment);
+           // Use regex to filter out purely whitespace/punctuation chunks for hover effects, 
+           // but we still render them.
+           // Note: For CJK, segment might be a particle which we want clickable.
+           const isClickable = segment.trim().length > 0; 
            
-           if (!isWord) return <span key={index}>{segment}</span>;
+           if (!isClickable) return <span key={index}>{segment}</span>;
 
            return (
              <span
                key={index}
                onClick={(e) => handleWordClick(e, segment)}
-               className="cursor-pointer hover:bg-indigo-500/30 hover:text-indigo-200 rounded px-0.5 transition-colors border-b border-dashed border-indigo-500/30 hover:border-indigo-400"
+               className={`cursor-pointer hover:bg-indigo-500/30 hover:text-indigo-200 transition-colors inline-block
+                ${!isSpacelessLanguage ? "rounded px-0.5 border-b border-dashed border-indigo-500/30 hover:border-indigo-400" : ""}
+               `}
+               style={isSpacelessLanguage ? { margin: 0, padding: 0 } : {}}
              >
                {segment}
              </span>

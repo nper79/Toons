@@ -4,7 +4,7 @@ import { Layout, Clapperboard, Layers, ChevronRight, Key, ExternalLink, Download
 import StoryInput from './components/StoryInput';
 import AssetGallery from './components/AssetGallery';
 import Storyboard from './components/Storyboard';
-import { StoryData, ProcessingStatus, AspectRatio, ImageSize } from './types';
+import { StoryData, ProcessingStatus, AspectRatio, ImageSize, TranslationCache } from './types';
 import * as GeminiService from './services/geminiService';
 import * as StorageService from './services/storageService';
 import { cropGridCell } from './utils/imageUtils';
@@ -202,51 +202,72 @@ export default function App() {
 
       try {
           let updatedVocabulary = { ...(storyData.vocabulary || {}) };
+          const wordsByLang: Record<string, Set<string>> = {};
+
+          // Helper to add words cleanly
+          const collect = (lang: string, candidates: string[]) => {
+              if (!wordsByLang[lang]) wordsByLang[lang] = new Set();
+              candidates.forEach(w => {
+                  // Normalize: remove Western AND Asian punctuation
+                  // includes: .,!?;:"“’'”()\-\[\] and 。、！ ？「」（）
+                  const clean = w.replace(/[.,!?;:"“’'”()\-\[\]。、！ ？「」（）]+/g, "").trim();
+                  if (clean.length > 0) wordsByLang[lang].add(clean);
+              });
+          };
           
-          // 1. Collect all unique words from all languages present in the story
-          // This includes the Source text (assumed English for now) and all translated segments
-          const allTextSources: { lang: string, text: string }[] = [];
-          
-          // Add Base Text
+          // 1. Collect all unique words
           storyData.segments.forEach(s => {
-              allTextSources.push({ lang: 'English', text: s.text });
-              // Add Translations
+              // Base Text (Assume English or Native)
+              const baseWords = s.text.split(/\s+/);
+              collect('English', baseWords);
+
+              // Translations
               if (s.translations) {
                   Object.entries(s.translations).forEach(([lang, data]) => {
-                      allTextSources.push({ lang: lang, text: (data as any).text });
+                      const translation = data as TranslationCache;
+                      const isAsian = ['Japanese', 'Chinese', 'Thai'].some(l => lang.includes(l));
+
+                      // 1. Collect from Main Narration
+                      if (translation.tokens && translation.tokens.length > 0) {
+                          collect(lang, translation.tokens);
+                      } else {
+                          collect(lang, translation.text.split(/\s+/));
+                      }
+
+                      // 2. Collect from Captions (CRITICAL FIX FOR CAPTION LOOKUP)
+                      translation.captions.forEach(cap => {
+                          if (isAsian && typeof Intl !== 'undefined' && (Intl as any).Segmenter) {
+                              try {
+                                  const segmenter = new (Intl as any).Segmenter(lang === 'Japanese' ? 'ja' : 'zh', { granularity: 'word' });
+                                  const segments = Array.from(segmenter.segment(cap)).map((seg: any) => seg.segment);
+                                  collect(lang, segments);
+                              } catch (e) {
+                                  // Fallback
+                                  collect(lang, cap.split(/\s+/)); 
+                              }
+                          } else {
+                              collect(lang, cap.split(/\s+/));
+                          }
+                      });
                   });
               }
           });
 
-          // Group text by language
-          const textByLang: Record<string, string[]> = {};
-          allTextSources.forEach(item => {
-              if (!textByLang[item.lang]) textByLang[item.lang] = [];
-              textByLang[item.lang].push(item.text);
-          });
-
           // Process each language
-          for (const [sourceLang, texts] of Object.entries(textByLang)) {
+          for (const [sourceLang, wordSet] of Object.entries(wordsByLang)) {
               addToast(`Indexing vocabulary for ${sourceLang}...`, "info");
               
-              // Extract unique words using simple regex splitting (or tokens if available logic was deeper)
-              // For robustness, we split by space for western, and rely on previous tokens for Asian if possible, 
-              // but for this batch script we will do a simple split and filter.
-              const fullText = texts.join(' ');
-              const rawWords = fullText.split(/[\s,.!?;:"“’'”()\-\[\]]+/).filter(w => w.length > 1); // naive split
-              const uniqueWords = Array.from(new Set(rawWords)).slice(0, 100); // Limit to top 100 unique words per lang to prevent huge bills for user
+              const uniqueWords = Array.from(wordSet).slice(0, 100); // Limit to top 100 unique words
 
               if (uniqueWords.length === 0) continue;
 
-              // We want to define these words in ALL supported languages
-              const targetLangs = LANGUAGES.map(l => l.code); // Define in all languages
+              const targetLangs = LANGUAGES.map(l => l.code);
               
               for (const targetLang of targetLangs) {
-                  if (sourceLang === targetLang) continue; // Skip defining English in English for now (or keep it if dictionary desired)
+                  if (sourceLang === targetLang) continue; 
 
                   addToast(`Defining ${sourceLang} terms in ${targetLang}...`, "info");
                   
-                  // Filter words that are NOT yet in vocabulary
                   const wordsToFetch = uniqueWords.filter(word => 
                       !updatedVocabulary[word] || !updatedVocabulary[word][targetLang]
                   );
@@ -254,7 +275,6 @@ export default function App() {
                   if (wordsToFetch.length > 0) {
                       const definitions = await GeminiService.batchDefineVocabulary(wordsToFetch, targetLang);
                       
-                      // Merge results
                       Object.entries(definitions).forEach(([word, def]) => {
                           if (!updatedVocabulary[word]) updatedVocabulary[word] = {};
                           updatedVocabulary[word][targetLang] = def;
