@@ -3,6 +3,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { getWordDefinition } from '../services/geminiService';
 import { Loader2, Book, Volume2 } from 'lucide-react';
+import { WordDefinition } from '../types';
 
 interface InteractiveTextProps {
   text: string;
@@ -10,6 +11,7 @@ interface InteractiveTextProps {
   nativeLanguage: string;
   className?: string;
   learningLanguage?: string; // To help decide rendering strategy
+  vocabulary?: Record<string, Record<string, WordDefinition>>; // Global cache
 }
 
 const InteractiveText: React.FC<InteractiveTextProps> = ({ 
@@ -17,7 +19,8 @@ const InteractiveText: React.FC<InteractiveTextProps> = ({
     tokens, 
     nativeLanguage, 
     className = "",
-    learningLanguage 
+    learningLanguage,
+    vocabulary
 }) => {
   const [selectedWord, setSelectedWord] = useState<{ word: string, definition: string, pronunciation?: string, x: number, y: number } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -37,6 +40,21 @@ const InteractiveText: React.FC<InteractiveTextProps> = ({
     setSelectedWord({ word, definition: "Loading...", x, y });
 
     try {
+      // 1. Check Global Cache First
+      if (vocabulary && vocabulary[word] && vocabulary[word][nativeLanguage]) {
+          const cached = vocabulary[word][nativeLanguage];
+          setSelectedWord({ 
+            word, 
+            definition: cached.definition, 
+            pronunciation: cached.pronunciation,
+            x, 
+            y 
+          });
+          setIsLoading(false);
+          return;
+      }
+
+      // 2. Fallback to API
       const result = await getWordDefinition(word, text, nativeLanguage);
       setSelectedWord({ 
         word, 

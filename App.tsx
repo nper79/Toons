@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Layout, Clapperboard, Layers, ChevronRight, Key, ExternalLink, Download, Upload, XCircle, CheckCircle, Info, AlertTriangle, Users, BookOpen, PenTool, Languages, Home as HomeIcon, Plus, Palette, Book } from 'lucide-react';
+import { Layout, Clapperboard, Layers, ChevronRight, Key, ExternalLink, Download, Upload, XCircle, CheckCircle, Info, AlertTriangle, Users, BookOpen, PenTool, Languages, Home as HomeIcon, Plus, Palette, Book, Globe, Library } from 'lucide-react';
 import StoryInput from './components/StoryInput';
 import AssetGallery from './components/AssetGallery';
 import Storyboard from './components/Storyboard';
@@ -58,6 +58,10 @@ export default function App() {
   const [readerData, setReaderData] = useState<StoryData | null>(null); // translated data for reader
   const [showReader, setShowReader] = useState(false);
 
+  // Batch Translation State
+  const [isBatchTranslating, setIsBatchTranslating] = useState(false);
+  const [isVocabGenerating, setIsVocabGenerating] = useState(false);
+
   const addToast = (message: string, type: string = 'info') => {
       const id = Math.random().toString(36).substring(7);
       setToasts(prev => [...prev, { id, type, message }]);
@@ -107,9 +111,17 @@ export default function App() {
       const initializedSegments = data.segments.map(s => ({
           ...s,
           selectedGridIndices: [],
-          generatedImageUrls: []
+          generatedImageUrls: [],
+          translations: {} // Initialize translation cache
       }));
-      setStoryData({ ...data, segments: initializedSegments, learningLanguage: 'English', nativeLanguage: 'English' });
+      setStoryData({ 
+          ...data, 
+          segments: initializedSegments, 
+          learningLanguage: 'English', 
+          nativeLanguage: 'English',
+          completedTranslations: { 'English': true },
+          vocabulary: {}
+      });
       setStatus(ProcessingStatus.READY);
       setActiveTab(Tab.ASSETS);
       addToast("Story generated successfully.", "success");
@@ -126,14 +138,174 @@ export default function App() {
       setStoryData(null);
   };
 
+  // NEW: Batch Translation Feature
+  const handleBatchTranslate = async () => {
+    if (!storyData || isBatchTranslating) return;
+    
+    setIsBatchTranslating(true);
+    addToast("Starting batch translation for all languages...", "info");
+
+    const languagesToTranslate = LANGUAGES.map(l => l.code).filter(code => code !== "English"); // Assume English is base (or check native)
+
+    let updatedSegments = [...storyData.segments];
+    let updatedCompletion = { ...(storyData.completedTranslations || {}) };
+    let completedCount = 0;
+
+    for (const targetLang of languagesToTranslate) {
+         try {
+             addToast(`Translating to ${targetLang}... (${completedCount + 1}/${languagesToTranslate.length})`, "info");
+             
+             // Check if all segments already have this language (avoid re-translating if fully cached)
+             const needsTranslation = updatedSegments.some(s => !s.translations?.[targetLang]);
+             
+             if (needsTranslation) {
+                 const translatedResults = await GeminiService.translateSegments(updatedSegments, targetLang);
+                 
+                 // Merge results into the segments' translation map
+                 updatedSegments = updatedSegments.map(seg => {
+                     const translatedSeg = translatedResults.find(t => t.id === seg.id);
+                     if (!translatedSeg) return seg;
+                     
+                     return {
+                         ...seg,
+                         translations: {
+                             ...(seg.translations || {}),
+                             [targetLang]: {
+                                 text: translatedSeg.text,
+                                 tokens: translatedSeg.tokens || [],
+                                 captions: translatedSeg.panels.map(p => p.caption),
+                                 choices: translatedSeg.choices?.map(c => c.text) || []
+                             }
+                         }
+                     };
+                 });
+             }
+             // Mark language as complete
+             updatedCompletion[targetLang] = true;
+             completedCount++;
+         } catch (e) {
+             console.error(`Failed to translate to ${targetLang}`, e);
+             addToast(`Failed to translate to ${targetLang}. Skipping.`, "error");
+         }
+    }
+
+    setStoryData({ ...storyData, segments: updatedSegments, completedTranslations: updatedCompletion });
+    setIsBatchTranslating(false);
+    addToast("Batch translation complete! Translations are saved in the project.", "success");
+  };
+
+  // NEW: Batch Vocabulary Generation
+  const handleBatchVocabulary = async () => {
+      if (!storyData || isVocabGenerating) return;
+      setIsVocabGenerating(true);
+      addToast("Generating Global Vocabulary... This process is exhaustive.", "info");
+
+      try {
+          let updatedVocabulary = { ...(storyData.vocabulary || {}) };
+          
+          // 1. Collect all unique words from all languages present in the story
+          // This includes the Source text (assumed English for now) and all translated segments
+          const allTextSources: { lang: string, text: string }[] = [];
+          
+          // Add Base Text
+          storyData.segments.forEach(s => {
+              allTextSources.push({ lang: 'English', text: s.text });
+              // Add Translations
+              if (s.translations) {
+                  Object.entries(s.translations).forEach(([lang, data]) => {
+                      allTextSources.push({ lang: lang, text: (data as any).text });
+                  });
+              }
+          });
+
+          // Group text by language
+          const textByLang: Record<string, string[]> = {};
+          allTextSources.forEach(item => {
+              if (!textByLang[item.lang]) textByLang[item.lang] = [];
+              textByLang[item.lang].push(item.text);
+          });
+
+          // Process each language
+          for (const [sourceLang, texts] of Object.entries(textByLang)) {
+              addToast(`Indexing vocabulary for ${sourceLang}...`, "info");
+              
+              // Extract unique words using simple regex splitting (or tokens if available logic was deeper)
+              // For robustness, we split by space for western, and rely on previous tokens for Asian if possible, 
+              // but for this batch script we will do a simple split and filter.
+              const fullText = texts.join(' ');
+              const rawWords = fullText.split(/[\s,.!?;:"“’'”()\-\[\]]+/).filter(w => w.length > 1); // naive split
+              const uniqueWords = Array.from(new Set(rawWords)).slice(0, 100); // Limit to top 100 unique words per lang to prevent huge bills for user
+
+              if (uniqueWords.length === 0) continue;
+
+              // We want to define these words in ALL supported languages
+              const targetLangs = LANGUAGES.map(l => l.code); // Define in all languages
+              
+              for (const targetLang of targetLangs) {
+                  if (sourceLang === targetLang) continue; // Skip defining English in English for now (or keep it if dictionary desired)
+
+                  addToast(`Defining ${sourceLang} terms in ${targetLang}...`, "info");
+                  
+                  // Filter words that are NOT yet in vocabulary
+                  const wordsToFetch = uniqueWords.filter(word => 
+                      !updatedVocabulary[word] || !updatedVocabulary[word][targetLang]
+                  );
+
+                  if (wordsToFetch.length > 0) {
+                      const definitions = await GeminiService.batchDefineVocabulary(wordsToFetch, targetLang);
+                      
+                      // Merge results
+                      Object.entries(definitions).forEach(([word, def]) => {
+                          if (!updatedVocabulary[word]) updatedVocabulary[word] = {};
+                          updatedVocabulary[word][targetLang] = def;
+                      });
+                  }
+              }
+          }
+
+          setStoryData({ ...storyData, vocabulary: updatedVocabulary });
+          addToast("Global Glossary Generation Complete.", "success");
+
+      } catch (e) {
+          addToast("Vocabulary generation failed.", "error");
+          console.error(e);
+      } finally {
+          setIsVocabGenerating(false);
+      }
+  };
+
   const handleOpenReader = async () => {
     if (!storyData) return;
     setIsTranslating(true);
-    addToast(`Translating story to ${learningLanguage}...`, "info");
     
     try {
-        // Translate the segments on the fly without modifying the original project
-        const translatedSegments = await GeminiService.translateSegments(storyData.segments, learningLanguage);
+        // 1. Check if we already have the translation in cache
+        const isTranslationAvailable = storyData.segments.every(s => 
+            (s.translations && s.translations[learningLanguage])
+        );
+
+        let translatedSegments;
+
+        if (isTranslationAvailable) {
+            console.log("Using cached translations.");
+            // Reconstruct segments from cache
+            translatedSegments = storyData.segments.map(s => {
+                const cache = s.translations![learningLanguage];
+                return {
+                    ...s,
+                    text: cache.text,
+                    tokens: cache.tokens,
+                    panels: s.panels.map((p, idx) => ({ ...p, caption: cache.captions[idx] || p.caption })),
+                    choices: s.choices?.map((c, idx) => ({ ...c, text: cache.choices[idx] || c.text }))
+                };
+            });
+            addToast(`Opening ${learningLanguage} Reader (Cached).`, "success");
+        } else {
+            console.log("Translation not found in cache. Generating...");
+            addToast(`Translating story to ${learningLanguage}...`, "info");
+            // Translate on the fly
+            translatedSegments = await GeminiService.translateSegments(storyData.segments, learningLanguage);
+        }
         
         setReaderData({
             ...storyData,
@@ -142,7 +314,8 @@ export default function App() {
             nativeLanguage
         });
         setShowReader(true);
-        addToast("Translation complete. Opening Reader.", "success");
+        if (!isTranslationAvailable) addToast("Translation complete.", "success");
+
     } catch (e) {
         addToast("Translation failed. Opening original.", "error");
         setReaderData(storyData); // Fallback
@@ -460,15 +633,40 @@ export default function App() {
                  <>
                    <div className="flex items-center gap-2">
                      <input type="file" ref={fileInputRef} className="hidden" accept=".zip" onChange={handleFileChange} />
+                     
                      <button onClick={handleImportClick} className="p-2 md:px-3 md:py-1.5 bg-slate-800 rounded border border-slate-700 flex items-center gap-2 hover:bg-slate-700 transition-colors" title="Import Project">
                        <Upload className="w-4 h-4" /> 
                        <span className="hidden md:inline text-xs font-bold">Import</span>
                      </button>
+                     
                      {storyData && (
-                       <button onClick={handleExport} className="p-2 md:px-3 md:py-1.5 bg-slate-800 rounded border border-slate-700 flex items-center gap-2 hover:bg-slate-700 transition-colors" title="Export Project">
-                         <Download className="w-4 h-4" /> 
-                         <span className="hidden md:inline text-xs font-bold">Export</span>
-                       </button>
+                        <>
+                            <div className="flex bg-slate-800 rounded border border-slate-700 items-center">
+                                <button 
+                                    onClick={handleBatchTranslate}
+                                    disabled={isBatchTranslating}
+                                    className="p-2 md:px-3 md:py-1.5 flex items-center gap-2 hover:bg-indigo-600 hover:text-white transition-colors disabled:opacity-50 border-r border-slate-700" 
+                                    title="Batch Translate to All Languages"
+                                >
+                                    <Globe className={`w-4 h-4 ${isBatchTranslating ? 'animate-spin' : ''}`} /> 
+                                    <span className="hidden md:inline text-xs font-bold">Translate All</span>
+                                </button>
+                                <button 
+                                    onClick={handleBatchVocabulary}
+                                    disabled={isVocabGenerating}
+                                    className="p-2 md:px-3 md:py-1.5 flex items-center gap-2 hover:bg-emerald-600 hover:text-white transition-colors disabled:opacity-50" 
+                                    title="Generate Global Glossary (Heavy Process)"
+                                >
+                                    <Library className={`w-4 h-4 ${isVocabGenerating ? 'animate-spin' : ''}`} /> 
+                                    <span className="hidden md:inline text-xs font-bold">Gen Glossary</span>
+                                </button>
+                            </div>
+                            
+                            <button onClick={handleExport} className="p-2 md:px-3 md:py-1.5 bg-slate-800 rounded border border-slate-700 flex items-center gap-2 hover:bg-slate-700 transition-colors" title="Export Project">
+                                <Download className="w-4 h-4" /> 
+                                <span className="hidden md:inline text-xs font-bold">Export</span>
+                            </button>
+                        </>
                      )}
                    </div>
 
@@ -532,7 +730,15 @@ export default function App() {
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6 relative z-10">
                         <div className="space-y-2">
-                             <label className="text-xs font-bold text-indigo-300 uppercase tracking-wider">I want to learn (Target Language)</label>
+                             <div className="flex justify-between items-center">
+                                 <label className="text-xs font-bold text-indigo-300 uppercase tracking-wider">I want to learn (Target Language)</label>
+                                 {/* TRANSLATION COMPLETION BADGE */}
+                                 {storyData && storyData.completedTranslations?.[learningLanguage] && (
+                                     <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded font-bold border border-emerald-500/30 flex items-center gap-1">
+                                         <CheckCircle className="w-3 h-3" /> Translation Completed
+                                     </span>
+                                 )}
+                             </div>
                              <div className="relative">
                                 <select 
                                     value={learningLanguage}
@@ -652,7 +858,9 @@ export default function App() {
                 onPlayAudio={handleGenerateAndPlayAudio} 
                 onStopAudio={handleStopAudio}
                 nativeLanguage={nativeLanguage}
-                learningLanguage={readerData.learningLanguage} // Pass this prop
+                learningLanguage={readerData.learningLanguage}
+                // Pass the global vocabulary so the reader can use it offline
+                vocabulary={storyData.vocabulary}
              />
         )}
       </main>

@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Play, ChevronDown, Layout, CheckCircle, GitBranch, Volume2, VolumeX } from 'lucide-react';
-import { StorySegment } from '../types';
+import { StorySegment, WordDefinition } from '../types';
 import InteractiveText from './InteractiveText';
 
 interface SlideshowPlayerProps {
@@ -12,6 +12,7 @@ interface SlideshowPlayerProps {
   onStopAudio: () => void;
   nativeLanguage?: string; // Passed from story data
   learningLanguage?: string; // Passed to determine text rendering strategy
+  vocabulary?: Record<string, Record<string, WordDefinition>>; // Passed down cache
 }
 
 const SlideshowPlayer: React.FC<SlideshowPlayerProps> = ({
@@ -20,7 +21,8 @@ const SlideshowPlayer: React.FC<SlideshowPlayerProps> = ({
   onPlayAudio,
   onStopAudio,
   nativeLanguage = "English",
-  learningLanguage
+  learningLanguage,
+  vocabulary
 }) => {
   const [hasStarted, setHasStarted] = useState(false);
   const [activeSegmentId, setActiveSegmentId] = useState<string | null>(null);
@@ -214,7 +216,8 @@ const SlideshowPlayer: React.FC<SlideshowPlayerProps> = ({
                             text={currentPanelData.caption} 
                             tokens={activeSeg?.tokens} 
                             nativeLanguage={nativeLanguage} 
-                            learningLanguage={learningLanguage} // Pass prop
+                            learningLanguage={learningLanguage}
+                            vocabulary={vocabulary} // PASS CACHE
                         />
                    </div>
                    <div className="text-[9px] text-center text-indigo-400 mt-2 uppercase tracking-widest font-sans opacity-50">
@@ -249,7 +252,8 @@ const SlideshowPlayer: React.FC<SlideshowPlayerProps> = ({
                                     <InteractiveText 
                                         text={choice.text} 
                                         nativeLanguage={nativeLanguage}
-                                        learningLanguage={learningLanguage} // Pass prop
+                                        learningLanguage={learningLanguage}
+                                        vocabulary={vocabulary} // PASS CACHE
                                     />
                                     <ChevronDown className="w-3 h-3 -rotate-90 opacity-0 group-hover:opacity-100 transition-all" />
                                 </button>

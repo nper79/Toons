@@ -73,6 +73,20 @@ export enum SegmentType {
   MERGE_POINT = 'MERGE_POINT'
 }
 
+// NEW: Interface to store cached translations
+export interface TranslationCache {
+  text: string;
+  tokens: string[];
+  captions: string[];
+  choices: string[];
+}
+
+// NEW: Interface for Vocabulary Definitions
+export interface WordDefinition {
+    definition: string;
+    pronunciation?: string;
+}
+
 export interface StorySegment {
   id: string;
   text: string; 
@@ -93,6 +107,9 @@ export interface StorySegment {
   selectedGridIndices: number[];
   generatedImageUrls: string[]; 
   
+  // NEW: Store all generated translations here
+  translations?: Record<string, TranslationCache>;
+
   audioUrl?: string;
   audioDuration?: number;
   videoUrl?: string;
@@ -108,6 +125,13 @@ export interface StoryData {
   visualStyleGuide: string; 
   cinematicDNA: CinematicDNA; 
   
+  // NEW: Track which languages are fully translated
+  completedTranslations?: Record<string, boolean>;
+
+  // NEW: Global Vocabulary Cache
+  // Structure: vocabulary[sourceWord][targetLanguageCode] = Definition
+  vocabulary?: Record<string, Record<string, WordDefinition>>;
+
   // NEW: Cover Art Data
   cover?: {
     imageUrl?: string;

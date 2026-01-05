@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type, Modality } from "@google/genai";
-import { StoryData, AspectRatio, ImageSize, ManhwaPanel, StorySegment } from "../types";
+import { StoryData, AspectRatio, ImageSize, ManhwaPanel, StorySegment, WordDefinition } from "../types";
 
 const getAi = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
 
@@ -157,7 +157,7 @@ export const translateSegments = async (segments: StorySegment[], targetLanguage
   });
 };
 
-// NEW: Interactive Dictionary Feature
+// NEW: Interactive Dictionary Feature (Single Word)
 export const getWordDefinition = async (word: string, contextSentence: string, targetLanguage: string): Promise<{ definition: string, pronunciation?: string }> => {
   const ai = getAi();
   
@@ -181,6 +181,72 @@ export const getWordDefinition = async (word: string, contextSentence: string, t
   });
 
   return JSON.parse(response.text || "{}");
+};
+
+// NEW: Batch Vocabulary Generation
+export const batchDefineVocabulary = async (
+    words: string[], 
+    targetLanguage: string
+): Promise<Record<string, WordDefinition>> => {
+    if (words.length === 0) return {};
+    
+    const ai = getAi();
+    
+    // Chunking to prevent token limits (max 50 words per call)
+    const chunkSize = 50;
+    let combinedResults: Record<string, WordDefinition> = {};
+
+    for (let i = 0; i < words.length; i += chunkSize) {
+        const chunk = words.slice(i, i + chunkSize);
+        
+        const schema = {
+            type: Type.OBJECT,
+            properties: {
+                definitions: {
+                    type: Type.ARRAY,
+                    items: {
+                        type: Type.OBJECT,
+                        properties: {
+                            word: { type: Type.STRING },
+                            definition: { type: Type.STRING, description: `Definition in ${targetLanguage}` },
+                            pronunciation: { type: Type.STRING }
+                        },
+                        required: ["word", "definition"]
+                    }
+                }
+            },
+            required: ["definitions"]
+        };
+
+        try {
+            const response = await ai.models.generateContent({
+                model: 'gemini-3-flash-preview',
+                contents: `
+                Act as a Dictionary. Define the following words into ${targetLanguage}.
+                Return a JSON array.
+                WORDS: ${JSON.stringify(chunk)}
+                `,
+                config: {
+                    responseMimeType: "application/json",
+                    responseSchema: schema
+                }
+            });
+
+            const result = JSON.parse(response.text || "{}");
+            if (result.definitions) {
+                result.definitions.forEach((def: any) => {
+                    combinedResults[def.word] = {
+                        definition: def.definition,
+                        pronunciation: def.pronunciation
+                    };
+                });
+            }
+        } catch (e) {
+            console.error("Batch vocab error", e);
+        }
+    }
+
+    return combinedResults;
 };
 
 export const regeneratePanelPrompts = async (

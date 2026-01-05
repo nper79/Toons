@@ -1,3 +1,4 @@
+
 import JSZip from 'jszip';
 import saveAs from 'file-saver';
 import { StoryData, Character, Setting, StorySegment } from '../types';
@@ -35,6 +36,13 @@ export const exportProject = async (storyData: StoryData) => {
       setting.imageUrl = `assets/${fileName}`;
     }
   });
+
+  // Process Cover Art
+  if (dataToSave.cover?.imageUrl && dataToSave.cover.imageUrl.startsWith('data:')) {
+    const fileName = `cover_art.png`;
+    assetsFolder?.file(fileName, getBase64Data(dataToSave.cover.imageUrl), { base64: true });
+    dataToSave.cover.imageUrl = `assets/${fileName}`;
+  }
 
   // Process Segments (Async needed for Blob URLs)
   // We use a regular for loop to handle async await
@@ -76,6 +84,7 @@ export const exportProject = async (storyData: StoryData) => {
     delete segment.imageOptions;
     // Remove generating flags
     delete segment.isGenerating;
+    // translations map is preserved automatically by JSON.stringify
   }
 
   // Add the JSON file
@@ -122,6 +131,12 @@ export const importProject = async (file: File): Promise<{ data: StoryData, warn
       return undefined;
   };
 
+  // Restore Cover
+  if (storyData.cover?.imageUrl) {
+      storyData.cover.imageUrl = await reconstructImage(storyData.cover.imageUrl);
+      storyData.cover.isGenerating = false;
+  }
+
   // Restore images and audio
   await Promise.all(storyData.characters.map(async (c: any) => {
     if (c.imageUrl) c.imageUrl = await reconstructImage(c.imageUrl);
@@ -138,6 +153,9 @@ export const importProject = async (file: File): Promise<{ data: StoryData, warn
   await Promise.all(storyData.segments.map(async (s: any) => {
     s.isGenerating = false; // Reset state
     
+    // Ensure translation object exists
+    if (!s.translations) s.translations = {};
+
     // Images
     if (s.generatedImageUrls && Array.isArray(s.generatedImageUrls)) {
         const restoredUrls = await Promise.all(s.generatedImageUrls.map((url: string) => reconstructImage(url)));
