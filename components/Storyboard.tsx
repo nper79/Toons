@@ -1,6 +1,6 @@
 
-import React, { useState, useRef, useMemo } from 'react';
-import { Clapperboard, Play, Volume2, Grid, Camera, Loader2, Trash2, Film, Check, RefreshCw, X, Maximize2, MoreHorizontal, Download, Eye, FileText, MicOff, GitBranch, GitMerge, ChevronDown, Sparkles, Map } from 'lucide-react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
+import { Clapperboard, Play, Volume2, Grid, Camera, Loader2, Trash2, Film, Check, RefreshCw, X, Maximize2, MoreHorizontal, Download, Eye, FileText, MicOff, GitBranch, GitMerge, ChevronDown, Sparkles, Map, History, Wand2, CornerDownLeft } from 'lucide-react';
 import { StorySegment, AspectRatio, ImageSize, SegmentType, Setting } from '../types';
 import SlideshowPlayer from './SlideshowPlayer';
 // @ts-ignore
@@ -10,13 +10,15 @@ import { createPortal } from 'react-dom';
 interface StoryboardProps {
   segments: StorySegment[];
   settings?: Setting[]; // Added settings prop to access authorized views
-  onGenerateScene: (segmentId: string, options: { aspectRatio: AspectRatio, imageSize: ImageSize, referenceViewUrl?: string }) => void;
+  onGenerateScene: (segmentId: string, options: { aspectRatio: AspectRatio, imageSize: ImageSize, referenceViewUrl?: string, continuitySegmentId?: string }) => void;
   onGenerateVideo: (segmentId: string, imageIndex: number) => void;
   onPlayAudio: (segmentId: string, text: string) => Promise<void>;
   onStopAudio: () => void;
   onSelectOption: (segmentId: string, optionIndex: number) => void;
   onDeleteAudio: (segmentId: string) => void;
-  onRegeneratePrompts?: (segmentId: string) => void;
+  onRegeneratePrompts?: (segmentId: string, continuitySegmentId?: string) => void;
+  // NEW: Handler for single panel correction
+  onRegenerateSinglePanel?: (segmentId: string, panelIndex: number, instruction: string) => void;
 }
 
 const Storyboard: React.FC<StoryboardProps> = ({ 
@@ -27,7 +29,8 @@ const Storyboard: React.FC<StoryboardProps> = ({
   onStopAudio,
   onSelectOption,
   onDeleteAudio,
-  onRegeneratePrompts
+  onRegeneratePrompts,
+  onRegenerateSinglePanel
 }) => {
   const [showPlayer, setShowPlayer] = useState(false);
   const [isTakingScreenshot, setIsTakingScreenshot] = useState(false);
@@ -36,8 +39,24 @@ const Storyboard: React.FC<StoryboardProps> = ({
   
   // State for reference view selection in editor
   const [selectedReferenceView, setSelectedReferenceView] = useState<string>('');
+  // State for Continuity Override
+  const [selectedContinuitySegmentId, setSelectedContinuitySegmentId] = useState<string>('');
+
+  // NEW: State for Single Panel Correction
+  const [selectedPanelIndex, setSelectedPanelIndex] = useState<number | null>(null);
+  const [correctionPrompt, setCorrectionPrompt] = useState('');
+  const [isRegeneratingPanel, setIsRegeneratingPanel] = useState(false);
 
   const storyboardContentRef = useRef<HTMLDivElement>(null);
+
+  // Reset local state when opening a new segment
+  useEffect(() => {
+      if (editingSegmentId) {
+          setSelectedPanelIndex(null);
+          setCorrectionPrompt('');
+          setIsRegeneratingPanel(false);
+      }
+  }, [editingSegmentId]);
 
   // Group consecutive branches for visualization
   const flowRows = useMemo(() => {
@@ -73,8 +92,34 @@ const Storyboard: React.FC<StoryboardProps> = ({
     } finally { setIsTakingScreenshot(false); }
   };
 
+  const handleSingleRegeneration = () => {
+      if (!editingSegmentId || selectedPanelIndex === null || !correctionPrompt.trim() || !onRegenerateSinglePanel) return;
+      
+      setIsRegeneratingPanel(true);
+      onRegenerateSinglePanel(editingSegmentId, selectedPanelIndex, correctionPrompt);
+      
+      // We don't clear the prompt immediately so user can see what they typed, 
+      // but we will reset the loading state via effect or timeout if needed, 
+      // though ideally the parent component update will trigger a re-render.
+      setTimeout(() => {
+          setIsRegeneratingPanel(false);
+          setCorrectionPrompt('');
+          setSelectedPanelIndex(null); // Deselect after submission
+      }, 3000); // Artificial delay for UI feedback if API is fast, normally API takes longer
+  };
+
   const editingSegment = segments.find(s => s.id === editingSegmentId);
   const associatedSetting = editingSegment ? settings.find(s => s.id === editingSegment.settingId) : null;
+  
+  // Get previous segments for the Continuity Dropdown
+  const previousSegmentsWithImages = useMemo(() => {
+      if (!editingSegment) return [];
+      const currentIndex = segments.findIndex(s => s.id === editingSegment.id);
+      return segments
+        .slice(0, currentIndex)
+        .filter(s => s.masterGridImageUrl)
+        .reverse(); // Show newest first
+  }, [editingSegment, segments]);
 
   const handleAudioClick = async (id: string, text: string) => {
     setGeneratingAudioId(id);
@@ -260,16 +305,44 @@ const Storyboard: React.FC<StoryboardProps> = ({
                         
                         <div className="space-y-6">
                             <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700/50">
-                                <h4 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
-                                    <Grid className="w-4 h-4 text-indigo-400" /> 
-                                    Master Grid (4-Panel Page)
+                                <h4 className="text-sm font-bold text-white mb-4 flex items-center gap-2 justify-between">
+                                    <span className="flex items-center gap-2"><Grid className="w-4 h-4 text-indigo-400" /> Master Grid (Select to Edit)</span>
+                                    {selectedPanelIndex !== null && (
+                                        <span className="text-[10px] bg-indigo-500 text-white px-2 py-0.5 rounded animate-pulse">
+                                            Editing Panel #{selectedPanelIndex + 1}
+                                        </span>
+                                    )}
                                 </h4>
                                 
                                 <div className="aspect-[9/16] bg-black rounded-lg overflow-hidden relative border border-slate-700 shadow-inner group">
-                                     {editingSegment.masterGridImageUrl ? (
+                                     {editingSegment.generatedImageUrls && editingSegment.generatedImageUrls.length === 4 ? (
+                                         // RENDER 2x2 GRID OF INDIVIDUAL IMAGES
+                                         <div className="grid grid-cols-2 grid-rows-2 w-full h-full">
+                                             {editingSegment.generatedImageUrls.map((imgUrl, idx) => (
+                                                 <div 
+                                                    key={idx}
+                                                    onClick={() => setSelectedPanelIndex(idx)}
+                                                    className={`relative w-full h-full cursor-pointer transition-all border-2 
+                                                        ${selectedPanelIndex === idx ? 'border-indigo-500 z-10 scale-[1.02] shadow-2xl' : 'border-transparent hover:border-white/30'}
+                                                    `}
+                                                 >
+                                                     <img src={imgUrl} className="w-full h-full object-cover" />
+                                                     <div className="absolute bottom-2 left-2 bg-black/60 text-white/90 px-2 py-0.5 rounded text-[10px] font-mono backdrop-blur-sm border border-white/10 pointer-events-none">
+                                                         #{idx + 1}
+                                                     </div>
+                                                     {isRegeneratingPanel && selectedPanelIndex === idx && (
+                                                         <div className="absolute inset-0 bg-black/70 flex flex-col items-center justify-center backdrop-blur-sm">
+                                                             <Loader2 className="w-6 h-6 text-indigo-400 animate-spin" />
+                                                         </div>
+                                                     )}
+                                                 </div>
+                                             ))}
+                                         </div>
+                                     ) : editingSegment.masterGridImageUrl ? (
+                                         // FALLBACK TO MASTER GRID IF CROPS MISSING (Should be rare)
                                          <>
                                             <img src={editingSegment.masterGridImageUrl} className={`w-full h-full object-contain transition-all duration-500 ${editingSegment.isGenerating ? 'opacity-30 blur-sm scale-105' : ''}`} />
-                                            
+                                            {/* Static overlay for beats */}
                                             <div className="absolute inset-0 grid grid-cols-2 grid-rows-2 pointer-events-none">
                                                 {Array.from({ length: 4 }).map((_, i) => (
                                                     <div key={i} className="relative border border-white/10">
@@ -279,32 +352,6 @@ const Storyboard: React.FC<StoryboardProps> = ({
                                                     </div>
                                                 ))}
                                             </div>
-
-                                            {editingSegment.isGenerating && (
-                                                <div className="absolute inset-0 flex flex-col items-center justify-center z-10">
-                                                    <Loader2 className="w-10 h-10 animate-spin text-indigo-500 mb-2" />
-                                                    <span className="text-xs font-bold text-indigo-400 tracking-widest uppercase animate-pulse">Regenerating...</span>
-                                                </div>
-                                            )}
-
-                                            {!editingSegment.isGenerating && (
-                                                 <div className="absolute bottom-4 right-4 z-20 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity duration-300">
-                                                    <button 
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        onGenerateScene(editingSegment.id, { 
-                                                            aspectRatio: AspectRatio.MOBILE, 
-                                                            imageSize: ImageSize.K1,
-                                                            referenceViewUrl: selectedReferenceView || undefined 
-                                                        });
-                                                    }}
-                                                    className="flex items-center gap-2 bg-slate-900/90 hover:bg-indigo-600 text-white text-xs font-bold px-4 py-2 rounded-lg border border-slate-700 hover:border-indigo-500 shadow-xl backdrop-blur-md transition-all transform hover:scale-105"
-                                                    >
-                                                        <RefreshCw className="w-3.5 h-3.5" />
-                                                        Regenerate Grid
-                                                    </button>
-                                                </div>
-                                            )}
                                          </>
                                      ) : (
                                          <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 p-8 text-center">
@@ -314,7 +361,8 @@ const Storyboard: React.FC<StoryboardProps> = ({
                                                 onClick={() => onGenerateScene(editingSegment.id, { 
                                                     aspectRatio: AspectRatio.MOBILE, 
                                                     imageSize: ImageSize.K1,
-                                                    referenceViewUrl: selectedReferenceView || undefined
+                                                    referenceViewUrl: selectedReferenceView || undefined,
+                                                    continuitySegmentId: selectedContinuitySegmentId || undefined
                                                 })}
                                                 disabled={editingSegment.isGenerating}
                                                 className="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2 rounded-lg font-bold text-sm transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -324,49 +372,122 @@ const Storyboard: React.FC<StoryboardProps> = ({
                                              </button>
                                          </div>
                                      )}
+
+                                     {/* Default Loading Overlay */}
+                                     {editingSegment.isGenerating && (
+                                        <div className="absolute inset-0 flex flex-col items-center justify-center z-10 bg-black/40 backdrop-blur-sm pointer-events-none">
+                                            <Loader2 className="w-10 h-10 animate-spin text-indigo-500 mb-2" />
+                                            <span className="text-xs font-bold text-indigo-400 tracking-widest uppercase animate-pulse">Regenerating Scene...</span>
+                                        </div>
+                                     )}
                                 </div>
+
+                                {/* NEW: Single Panel Correction Input */}
+                                {selectedPanelIndex !== null && (
+                                    <div className="mt-4 p-4 bg-indigo-900/20 border border-indigo-500/30 rounded-lg animate-in fade-in slide-in-from-top-2">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <label className="text-xs font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-2">
+                                                <Wand2 className="w-3 h-3" />
+                                                Correction for Panel {selectedPanelIndex + 1}
+                                            </label>
+                                            <button onClick={() => setSelectedPanelIndex(null)} className="text-slate-500 hover:text-white"><X className="w-3 h-3" /></button>
+                                        </div>
+                                        <div className="flex gap-2">
+                                            <input 
+                                                type="text" 
+                                                value={correctionPrompt}
+                                                onChange={(e) => setCorrectionPrompt(e.target.value)}
+                                                onKeyDown={(e) => { if(e.key === 'Enter') handleSingleRegeneration(); }}
+                                                placeholder="E.g., 'Make her climb the stairs instead of descending'..."
+                                                className="flex-1 bg-slate-950 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:ring-2 focus:ring-indigo-500 outline-none"
+                                                autoFocus
+                                            />
+                                            <button 
+                                                onClick={handleSingleRegeneration}
+                                                disabled={!correctionPrompt.trim() || isRegeneratingPanel}
+                                                className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded font-bold text-xs flex items-center gap-2 disabled:opacity-50"
+                                            >
+                                                {isRegeneratingPanel ? <Loader2 className="w-3 h-3 animate-spin" /> : <CornerDownLeft className="w-3 h-3" />}
+                                                FIX
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         </div>
 
                         <div className="space-y-6">
                             
-                            {/* NEW: Background Control Panel */}
-                            <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700/50">
-                                <h4 className="text-xs font-bold text-emerald-400 uppercase tracking-widest flex items-center gap-2 mb-4">
+                            {/* Composition Control Panel (With Continuity Override) */}
+                            <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700/50 space-y-6">
+                                <h4 className="text-xs font-bold text-emerald-400 uppercase tracking-widest flex items-center gap-2 border-b border-slate-700/50 pb-2">
                                     <Map className="w-4 h-4" />
                                     Composition Control
                                 </h4>
                                 
+                                {/* 1. Background Reference */}
                                 {associatedSetting && associatedSetting.authorizedViews && associatedSetting.authorizedViews.length > 0 ? (
                                     <div className="space-y-3">
-                                        <label className="text-xs text-slate-400 block">Select Background Reference (Forces consistency):</label>
+                                        <label className="text-xs text-slate-400 font-bold block">1. Environment Consistency (Background)</label>
                                         <select 
                                             value={selectedReferenceView}
                                             onChange={(e) => setSelectedReferenceView(e.target.value)}
                                             className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-sm text-white focus:ring-2 focus:ring-emerald-500 outline-none"
                                         >
-                                            <option value="">Creative Mode (AI Decides Angle)</option>
+                                            <option value="">Auto (Creative Freedom)</option>
                                             {associatedSetting.authorizedViews.map(view => (
                                                 <option key={view.id} value={view.imageUrl}>
-                                                    FORCE: {view.name}
+                                                    Force View: {view.name}
                                                 </option>
                                             ))}
                                         </select>
-                                        
-                                        {selectedReferenceView && (
-                                            <div className="relative h-24 w-full bg-black rounded-lg overflow-hidden border border-emerald-500/50">
-                                                <img src={selectedReferenceView} className="w-full h-full object-cover opacity-60" />
-                                                <div className="absolute inset-0 flex items-center justify-center text-[10px] font-bold text-white uppercase bg-black/20">
-                                                    Reference Active
-                                                </div>
-                                            </div>
-                                        )}
                                     </div>
                                 ) : (
                                     <p className="text-xs text-slate-500 italic">
-                                        No Master Asset Views generated for this setting yet. Go to 'Assets' tab to generate a Reference Sheet.
+                                        No Master Asset Views generated for this setting yet.
                                     </p>
                                 )}
+
+                                {/* 2. NEW: Continuity Override (Character/Outfit) */}
+                                <div className="space-y-3">
+                                    <label className="text-xs text-slate-400 font-bold block flex items-center gap-2">
+                                        2. Character Continuity (Outfit/Items)
+                                        <span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-1.5 rounded uppercase">Forensic Override</span>
+                                    </label>
+                                    <div className="relative">
+                                        <select 
+                                            value={selectedContinuitySegmentId}
+                                            onChange={(e) => setSelectedContinuitySegmentId(e.target.value)}
+                                            className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 pl-9 text-sm text-white focus:ring-2 focus:ring-indigo-500 outline-none appearance-none"
+                                        >
+                                            <option value="">Auto (Use Previous Scene)</option>
+                                            {previousSegmentsWithImages.map((seg, idx) => (
+                                                <option key={seg.id} value={seg.id}>
+                                                     Scene {segments.findIndex(s => s.id === seg.id) + 1}: {seg.text.substring(0, 30)}...
+                                                </option>
+                                            ))}
+                                        </select>
+                                        <History className="w-4 h-4 text-slate-500 absolute left-3 top-2.5 pointer-events-none" />
+                                    </div>
+                                    <p className="text-[10px] text-slate-500 leading-relaxed">
+                                        If the previous scene (N-1) showed a different character (e.g. Villain), select an older scene here to force the AI to copy the Main Character's outfit/items from that specific image.
+                                    </p>
+                                    
+                                    {/* Preview selected continuity image */}
+                                    {selectedContinuitySegmentId && (
+                                        <div className="mt-2 p-2 bg-slate-900 rounded-lg border border-slate-700 flex gap-3 items-center">
+                                            <div className="w-10 h-10 rounded overflow-hidden shrink-0 border border-slate-600">
+                                                <img 
+                                                    src={segments.find(s => s.id === selectedContinuitySegmentId)?.masterGridImageUrl} 
+                                                    className="w-full h-full object-cover" 
+                                                />
+                                            </div>
+                                            <div className="text-[10px] text-indigo-300">
+                                                <span className="font-bold">Active Reference:</span> Scene {segments.findIndex(s => s.id === selectedContinuitySegmentId) + 1}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
                             </div>
 
                             {editingSegment.panels && editingSegment.panels.length > 0 && (
@@ -378,7 +499,7 @@ const Storyboard: React.FC<StoryboardProps> = ({
                                         </h4>
                                         {onRegeneratePrompts && (
                                             <button 
-                                                onClick={() => onRegeneratePrompts(editingSegment.id)}
+                                                onClick={() => onRegeneratePrompts(editingSegment.id, selectedContinuitySegmentId || undefined)}
                                                 disabled={editingSegment.isGenerating}
                                                 className="text-[10px] font-bold text-slate-400 hover:text-white flex items-center gap-1 bg-slate-700/50 px-2 py-1 rounded hover:bg-indigo-600 transition-colors disabled:opacity-50"
                                             >
@@ -389,7 +510,15 @@ const Storyboard: React.FC<StoryboardProps> = ({
                                      </div>
                                      <div className="space-y-3">
                                         {editingSegment.panels.map((panel, idx) => (
-                                            <div key={idx} className="flex gap-4 items-start p-3 bg-slate-900 rounded-lg border border-slate-700">
+                                            <div 
+                                                key={idx} 
+                                                onClick={() => setSelectedPanelIndex(idx)}
+                                                className={`flex gap-4 items-start p-3 rounded-lg border cursor-pointer transition-all
+                                                    ${selectedPanelIndex === idx 
+                                                        ? 'bg-indigo-900/30 border-indigo-500' 
+                                                        : 'bg-slate-900 border-slate-700 hover:border-slate-500'}
+                                                `}
+                                            >
                                                 <div className={`text-[10px] font-bold px-2 py-1 rounded uppercase shrink-0 mt-0.5 border
                                                     ${idx === 0 ? 'bg-indigo-900/50 text-indigo-200 border-indigo-700' : 
                                                       idx === 1 ? 'bg-indigo-900/50 text-indigo-200 border-indigo-700' : 

@@ -1,5 +1,4 @@
 
-
 export enum ProcessingStatus {
   IDLE = 'IDLE',
   ANALYZING = 'ANALYZING',
@@ -94,6 +93,9 @@ export interface StorySegment {
   settingId: string;
   characterIds: string[];
   
+  // NEW: Specific outfit/state for this segment (e.g. "Naked, wet skin" or "Damaged Armor")
+  costumeOverride?: string;
+
   panels: ManhwaPanel[]; 
   
   scenePrompt?: string; 

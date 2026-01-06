@@ -15,6 +15,9 @@ const MODEL_VIDEO_HD = 'veo-3.1-generate-preview';
 // NEW: Ultra-fast model for dictionary lookups
 const MODEL_FAST_DEFINITIONS = 'gemini-flash-lite-latest';
 
+// NEW: Stable model for Forensic Vision Analysis (Flash is more robust for pure JSON extraction from images)
+const MODEL_FORENSIC = 'gemini-3-flash-preview';
+
 export const VOICES = [
   { name: 'Puck', gender: 'Male', style: 'Neutral & Clear' },
   { name: 'Charon', gender: 'Male', style: 'Deep & Grave' },
@@ -252,14 +255,74 @@ export const batchDefineVocabulary = async (
     return combinedResults;
 };
 
+// STEP 1: FORENSIC ANALYSIS (Dedicated Function)
+const performForensicAnalysis = async (
+    previousImage: string | undefined, 
+    previousText: string | undefined
+): Promise<any> => {
+    const ai = getAi();
+    
+    const schema = {
+        type: Type.OBJECT,
+        properties: {
+            exact_outfit: { type: Type.STRING, description: "The EXACT clothing seen. E.g. 'White bathrobe with belt'. If naked, say 'Naked'." },
+            held_item: { type: Type.STRING, description: "What is in their hands? BE SPECIFIC. If it is a Mop/Broom, say 'Floor Mop'. If a knife, say 'Knife'. If empty, say 'None'." },
+            environment_state: { type: Type.STRING, description: "Is it a bathroom? Kitchen? Is there steam?" }
+        },
+        required: ["exact_outfit", "held_item", "environment_state"]
+    };
+
+    const parts: any[] = [];
+    if (previousImage) {
+        const base64Data = previousImage.includes(',') ? previousImage.split(',')[1] : previousImage;
+        parts.push({ inlineData: { mimeType: 'image/png', data: base64Data } });
+        parts.push({ text: "Look at this image. What exactly is the character wearing and holding? Don't generalize. If it's a mop, call it a mop." });
+    }
+    if (previousText) {
+        parts.push({ text: `Previous Context Text: "${previousText}"` });
+    }
+    
+    // If no previous data, return defaults
+    if (parts.length === 0) return { exact_outfit: "Casual clothes", held_item: "None", environment_state: "Generic" };
+
+    const response = await ai.models.generateContent({
+        model: MODEL_FORENSIC, // Switched to Flash to prevent 500 Errors
+        contents: { parts: parts },
+        config: {
+            responseMimeType: "application/json",
+            responseSchema: schema,
+            systemInstruction: "You are a Forensic Image Analyst. Identify the specific objects and clothing in the scene."
+        }
+    });
+
+    return JSON.parse(response.text || "{}");
+};
+
 export const regeneratePanelPrompts = async (
     segmentText: string,
     fullStoryText: string,
     style: string,
-    contextInfo: string
+    contextInfo: string,
+    previousSegmentImage?: string,
+    previousSegmentText?: string
 ): Promise<ManhwaPanel[]> => {
     const ai = getAi();
+
+    // --- PHASE 1: FORENSIC AUDIT (The "Truth" Step) ---
+    // We do this in a separate call to ensure the "Mop" isn't hallucinated away.
+    let forensicData = { exact_outfit: "Unknown", held_item: "None", environment_state: "Unknown" };
     
+    if (previousSegmentImage || previousSegmentText) {
+        try {
+            forensicData = await performForensicAnalysis(previousSegmentImage, previousSegmentText);
+            console.log("Forensic Analysis Result:", forensicData);
+        } catch (e) {
+            console.error("Forensic analysis failed", e);
+            // Don't crash the whole process, just log it. The next phase will run with 'Unknown' state.
+        }
+    }
+    
+    // --- PHASE 2: GENERATION (The "Drafting" Step) ---
     const schema = {
         type: Type.OBJECT,
         properties: {
@@ -269,10 +332,10 @@ export const regeneratePanelPrompts = async (
                     type: Type.OBJECT,
                     properties: {
                         panelIndex: { type: Type.INTEGER },
-                        visualPrompt: { type: Type.STRING, description: "EXTREMELY DETAILED visual description." },
+                        visualPrompt: { type: Type.STRING, description: "A MASSIVE, detailed paragraph (min 6 sentences). Describe Subject, Outfit, Pose, Item, Environment, Lighting." },
                         caption: { type: Type.STRING },
                         cameraAngle: { type: Type.STRING },
-                        shotType: { type: Type.STRING, enum: ['ESTABLISHING', 'CHARACTER', 'ACTION', 'DETAIL'], description: "Choose the shot type that BEST fits the narrative beat." }
+                        shotType: { type: Type.STRING, enum: ['ESTABLISHING', 'CHARACTER', 'ACTION', 'DETAIL', 'CLOSE-UP'] }
                     },
                     required: ["panelIndex", "visualPrompt", "caption", "cameraAngle", "shotType"]
                 },
@@ -283,43 +346,56 @@ export const regeneratePanelPrompts = async (
     };
 
     const systemInstruction = `
-    You are a Cinematographer and Art Director for a high-budget Manhwa.
-    **TASK**: Rewrite visual prompts for the TARGET SEGMENT provided.
+    You are an expert Manhwa Director.
     
-    **CRITICAL: NO TEXT GENERATION**
-    - The visual prompts MUST NOT request text, sound effects, or speech bubbles.
-    - Focus strictly on visual composition, lighting, and action.
+    **YOUR MANDATE**:
+    1. **CONTINUITY IS GOD**: You have been given a "FORENSIC STATE" from the previous scene. You MUST use it.
+       - **OUTFIT**: If Forensic State says "White Bathrobe", your prompts MUST say "White Bathrobe". Do NOT change it to "T-shirt".
+       - **HELD ITEM**: If Forensic State says "Holding a Mop", your prompts MUST say "Holding a Mop". Do NOT change it to "Stick" or "Weapon".
+       - **EXCEPTION**: Only change these IF the current text explicitly says "She dropped the mop" or "She changed clothes".
     
-    **DYNAMIC CINEMATOGRAPHY (NO FORMULAS)**
-    - Do NOT follow a rigid "Wide -> Close -> Close" formula.
-    - Choose the 'shotType' that best tells the story. 
-    - Panel 1 CAN be a Close-up if it's a mystery start. 
-    - Panel 4 CAN be a Wide Shot if it's a grand reveal.
-    - Use 'ESTABLISHING' when the reader needs to see the location/layout.
-    - Use 'ACTION' or 'CHARACTER' (Isolation) when focus is key.
+    2. **PROMPT LENGTH**:
+       - The user is complaining that prompts are too short.
+       - **RULE**: Every 'visualPrompt' must be at least 150 words long. 
+       - Structure it like this: "[SUBJECT]... [OUTFIT]... [ACTION]... [HELD ITEM]... [ENVIRONMENT]... [LIGHTING]..."
+       
+    3. **INFERENCE**:
+       - If the text says "I grabbed a weapon" and the location is a Bathroom, and previous item was "None", infer "Mop" or "Plunger" or "Toilet Lid". Do NOT infer "Sword".
+    `;
     
-    **COSTUME CONSISTENCY**:
-    - If the character is wearing "Office Heels", NEVER describe "Sneakers" in an action shot.
-    - If the character has "Long Hair", do not change it.
-    - Adhere strictly to the defined character details in ${contextInfo}.
+    const parts: any[] = [];
     
-    **CONTEXT**: ${contextInfo}`;
+    // Inject the Forensic Truth directly into the context
+    const forensicContext = `
+    **LOCKED VISUAL FACTS (FROM PREVIOUS SCENE)**:
+    - OUTFIT: ${forensicData.exact_outfit}
+    - HELD ITEM: ${forensicData.held_item}
+    - ENVIRONMENT: ${forensicData.environment_state}
+    
+    *INSTRUCTION*: If the text below does not explicitly describe changing these, you MUST COPY these facts into the new prompts.
+    `;
+    
+    parts.push({ text: forensicContext });
+
+    parts.push({ 
+        text: `
+        **CURRENT SCENE NARRATIVE**: "${segmentText}"
+        
+        **FULL CONTEXT**: ${contextInfo}
+        **ART STYLE**: ${style}
+        
+        Generate 4 Ultra-Detailed Panels. Remember: The Mop is a Mop. The Robe is a Robe.
+        ` 
+    });
 
     const response = await ai.models.generateContent({
         model: MODEL_TEXT_ANALYSIS,
-        contents: `
-FULL STORY:
-${fullStoryText}
-
-TARGET SEGMENT:
-${segmentText}
-
-ART STYLE: ${style}`,
+        contents: { parts: parts },
         config: {
             responseMimeType: "application/json",
             responseSchema: schema,
             systemInstruction: systemInstruction,
-            thinkingConfig: { thinkingBudget: 4096 }
+            thinkingConfig: { thinkingBudget: 8192 } // High budget to ensure it writes long prompts
         }
     });
 
@@ -370,6 +446,8 @@ export const analyzeStoryText = async (storyText: string, artStyle: string): Pro
             id: { type: Type.STRING },
             text: { type: Type.STRING, description: "Original narrative text." },
             type: { type: Type.STRING, enum: ['MAIN', 'BRANCH', 'MERGE_POINT'] },
+            // NEW: Override field for specific scenes
+            costumeOverride: { type: Type.STRING, description: "CRITICAL: The specific outfit/state of the character in THIS segment. Example: 'Naked, wet skin, no clothes' OR 'Pajamas' OR 'Torn battle armor'. If undefined, assumes default." },
             choices: {
                 type: Type.ARRAY,
                 items: {
@@ -409,13 +487,12 @@ export const analyzeStoryText = async (storyText: string, artStyle: string): Pro
   const systemInstruction = `
   You are an expert Director for Interactive Manhwa.
   
-  **CRITICAL RULE FOR SETTINGS**:
-  When defining 'settings', you MUST create a 'colorPalette'. This is crucial for the "Bokeh/Blur" technique.
+  **CRITICAL RULE FOR CLOTHING (COSTUME OVERRIDE)**:
+  - You MUST analyze the context to determine the character's clothing state for EACH segment.
+  - If the text implies bathing, sleeping, or changing, you MUST set 'costumeOverride' to describe that specific state (e.g., "Naked, bare shoulders, wet skin").
+  - This overrides their default character sheet.
   
-  **CRITICAL RULE FOR CHARACTERS**:
-  Define explicit clothing details (shoes, shirt, pants) in the description to ensure consistency.
-  
-  **DYNAMIC CINEMATOGRAPHY (NO FORMULAS)**: 
+  **DYNAMIC CINEMATOGRAPHY**: 
   - Do NOT follow a rigid "Wide -> Close -> Close" formula.
   - Choose shots that serve the story. Panel 1 does NOT have to be an Establishing shot.
   
@@ -455,8 +532,11 @@ export const generateImage = async (
   const systemInstruction = `You are an expert concept artist. ${styleInstruction}.
   
   **VISUAL HIERARCHY OF TRUTH (CRITICAL)**:
-  1. **CONTINUITY REFERENCE**: If a 'CONTINUITY IMAGE' is provided, it represents the PREVIOUS SECOND in time. You MUST match the character's CURRENT STATE (Clothing, Nudity, Wounds, Dirt) from this image exactly.
-     - Example: If the Continuity Image shows the character Naked in a bathtub, DRAW THEM NAKED (Tastefully), even if the 'Character Sheet' shows them in a suit.
+  1. **[FORCED OUTFIT] INSTRUCTION**: If the prompt text contains specific clothing instructions (e.g., "Naked", "Pajamas"), this **OVERRIDES** the clothing in the Reference Images.
+     - The Reference Images are for **FACIAL FEATURES & HAIR ONLY**.
+     - Do NOT simply copy the shirt from the reference image if the text says "Naked".
+  
+  2. **CONTINUITY REFERENCE**: If a 'CONTINUITY IMAGE' is provided, matches the character's state from that image.
   
   **ENVIRONMENTAL CONSISTENCY STRATEGY**:
   - The model (you) often hallucinates room details (windows moving, tiles changing).
@@ -483,7 +563,7 @@ export const generateImage = async (
 
   // 2. Add Character/Setting Refs
   if (refImages && refImages.length > 0) {
-    promptParts.push({ text: "**IDENTITY REFERENCE (LOWER PRIORITY)**: Use these ONLY for facial features and hair. Ignore clothing if it conflicts with the Continuity Image." });
+    promptParts.push({ text: "**IDENTITY REFERENCE (FACE/HAIR ONLY)**: Use these for facial features. IGNORE CLOTHING if prompt specifies otherwise." });
     refImages.forEach(b64 => {
       const base64Data = b64.includes(',') ? b64.split(',')[1] : b64;
       promptParts.push({ inlineData: { mimeType: 'image/png', data: base64Data } });

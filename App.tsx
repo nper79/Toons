@@ -466,27 +466,153 @@ export default function App() {
     }
   };
 
-  const handleRegeneratePrompts = async (segmentId: string) => {
+  const handleRegeneratePrompts = async (segmentId: string, continuitySegmentId?: string) => {
       if (!storyData) return;
       setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, isGenerating: true } : s) }) : null);
-      addToast("Enriching scene prompts with technical layout context...", "info");
+      addToast("Analyzing scene for continuity and spatial accuracy...", "info");
+      
       try {
-          const segment = storyData.segments.find(s => s.id === segmentId);
-          if (!segment) throw new Error("Segment not found");
+          const segmentIndex = storyData.segments.findIndex(s => s.id === segmentId);
+          if (segmentIndex === -1) throw new Error("Segment not found");
+          
+          const segment = storyData.segments[segmentIndex];
+          
+          // Get context info
           let context = `Characters: ${segment.characterIds.map(id => storyData.characters.find(c => c.id === id)?.name).join(', ')}. `;
           const setting = storyData.settings.find(s => s.id === segment.settingId);
           if (setting) { context += `Location: ${setting.name}. SPATIAL BLUEPRINT: ${setting.spatialLayout}.`; }
+          
           const fullStoryText = storyData.segments.map(s => s.text).join('\n\n');
-          const newPanels = await GeminiService.regeneratePanelPrompts(segment.text, fullStoryText, storyData.artStyle, context);
+          
+          // --- GET CONTINUITY DATA ---
+          let prevImage = undefined;
+          let prevText = undefined;
+
+          // 1. Check for Manual Override
+          if (continuitySegmentId) {
+              const continuitySeg = storyData.segments.find(s => s.id === continuitySegmentId);
+              if (continuitySeg) {
+                  prevText = continuitySeg.text;
+                  if (continuitySeg.masterGridImageUrl) {
+                      prevImage = continuitySeg.masterGridImageUrl;
+                  }
+              }
+          } 
+          // 2. Default to N-1
+          else if (segmentIndex > 0) {
+              const prevSeg = storyData.segments[segmentIndex - 1];
+              prevText = prevSeg.text;
+              if (prevSeg.masterGridImageUrl) {
+                  prevImage = prevSeg.masterGridImageUrl;
+              }
+          }
+
+          const newPanels = await GeminiService.regeneratePanelPrompts(
+              segment.text, 
+              fullStoryText, 
+              storyData.artStyle, 
+              context,
+              prevImage, // Pass image (either override or N-1)
+              prevText   // Pass text
+          );
+          
           setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, panels: newPanels, isGenerating: false } : s) }) : null);
-          addToast("Prompts refined with spatial accuracy.", "success");
+          addToast("Continuity check complete. Prompts refined.", "success");
       } catch (e) {
            setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, isGenerating: false } : s) }) : null);
            addToast("Prompt refinement failed.", "error");
       }
   };
 
-  const handleGenerateScene = async (segmentId: string, options: { aspectRatio: AspectRatio, imageSize: ImageSize, referenceViewUrl?: string }) => {
+  // NEW: Handle Single Panel Regeneration
+  const handleRegenerateSinglePanel = async (segmentId: string, panelIndex: number, instruction: string) => {
+      if (!storyData) return;
+      
+      // Update state to show loading on UI (optional, but handled by component local state mostly)
+      addToast(`Regenerating Panel #${panelIndex + 1}...`, "info");
+      
+      try {
+          const segment = storyData.segments.find(s => s.id === segmentId);
+          if (!segment || !segment.panels || !segment.panels[panelIndex]) throw new Error("Panel not found");
+          
+          const originalPrompt = segment.panels[panelIndex].visualPrompt;
+          
+          // 1. Construct Enhanced Prompt with Instruction
+          const refinedPrompt = `
+          [ORIGINAL VISUAL CONTEXT]: ${originalPrompt}
+          
+          [USER CORRECTION INSTRUCTION]: ${instruction}
+          
+          [ACTION]: Modify the original visual to strictly follow the User Correction while maintaining the same art style, character consistency, and environment.
+          `;
+          
+          // 2. Gather References
+          const refImages: string[] = [];
+          if (segment.characterIds && segment.characterIds.length > 0) {
+             segment.characterIds.forEach(charId => {
+                  const char = storyData.characters.find(c => c.id === charId);
+                  if (char && char.imageUrl) refImages.push(char.imageUrl);
+             });
+          }
+          const setting = storyData.settings.find(s => s.id === segment.settingId);
+          if (setting && setting.imageUrl) refImages.push(setting.imageUrl);
+
+          // 3. Generate Single Image (Using the Panel Prompt directly)
+          // We use PORTRAIT aspect ratio for individual panels usually, or match what the grid cell was.
+          // Since the master grid is 9:16, a 2x2 cell is roughly 4.5:8 (~9:16).
+          // We'll stick to MOBILE (9:16) for individual vertical panels or SQUARE for ease. 
+          // Let's use MOBILE to match the verticality of a webtoon panel.
+          const newImageUrl = await GeminiService.generateImage(
+              refinedPrompt, 
+              AspectRatio.MOBILE, 
+              ImageSize.K1, 
+              refImages, 
+              storyData.visualStyleGuide, 
+              storyData.cinematicDNA, 
+              false // No grid mode, single image
+          );
+          
+          // 4. Update the Data Structure
+          setStoryData(prev => {
+              if (!prev) return null;
+              return {
+                  ...prev,
+                  segments: prev.segments.map(s => {
+                      if (s.id !== segmentId) return s;
+                      
+                      // Clone generatedImageUrls or init if missing
+                      const newImageUrls = [...(s.generatedImageUrls || [])];
+                      // Ensure array is big enough if we are generating index 3 but only have 0
+                      while(newImageUrls.length <= panelIndex) newImageUrls.push(s.masterGridImageUrl || "");
+                      
+                      newImageUrls[panelIndex] = newImageUrl;
+                      
+                      // Also update the text visualPrompt so future regenerations might remember? 
+                      // (Optional, but good for record keeping)
+                      const newPanels = [...s.panels];
+                      newPanels[panelIndex] = {
+                          ...newPanels[panelIndex],
+                          visualPrompt: `${originalPrompt} (Modified: ${instruction})`
+                      };
+
+                      return {
+                          ...s,
+                          generatedImageUrls: newImageUrls,
+                          panels: newPanels
+                      };
+                  })
+              };
+          });
+          
+          addToast("Panel regenerated successfully.", "success");
+
+      } catch (e) {
+          addToast("Failed to regenerate panel.", "error");
+          console.error(e);
+      }
+  };
+
+  const handleGenerateScene = async (segmentId: string, options: { aspectRatio: AspectRatio, imageSize: ImageSize, referenceViewUrl?: string, continuitySegmentId?: string }) => {
     if (!storyData) return;
     setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, isGenerating: true } : s) }) : null);
     try {
@@ -499,9 +625,25 @@ export default function App() {
           generalSettingPrompt = `\n\n[LOCATION]: ${setting.name}. ${setting.spatialLayout}.`;
           if (setting.colorPalette) settingColors = setting.colorPalette;
       }
+      
       const refImages: string[] = [];
-      const firstSegment = storyData.segments[0];
-      if (firstSegment && firstSegment.masterGridImageUrl && firstSegment.id !== segmentId) { refImages.push(firstSegment.masterGridImageUrl); }
+      
+      // 1. ADD CONTINUITY IMAGE (Manual Override OR Default N-1)
+      let continuityImage: string | undefined = undefined;
+      
+      if (options.continuitySegmentId) {
+          // Manual Override
+          const continuitySeg = storyData.segments.find(s => s.id === options.continuitySegmentId);
+          if (continuitySeg?.masterGridImageUrl) continuityImage = continuitySeg.masterGridImageUrl;
+      } else {
+          // Default: Check N-1
+          const segmentIndex = storyData.segments.findIndex(s => s.id === segmentId);
+          if (segmentIndex > 0) {
+              const prevSeg = storyData.segments[segmentIndex - 1];
+              if (prevSeg.masterGridImageUrl) continuityImage = prevSeg.masterGridImageUrl;
+          }
+      }
+
       let charPrompt = "\n\n[CHARACTERS]:";
       let characterInjection = "";
       if (segment.characterIds && segment.characterIds.length > 0) {
@@ -523,7 +665,20 @@ export default function App() {
          }
       }) : [];
       if (setting && setting.imageUrl) refImages.push(setting.imageUrl);
-      const masterGridUrl = await GeminiService.generateImage(`Story Segment: ${segment.text} ${charPrompt}`, options.aspectRatio, options.imageSize, refImages, storyData.visualStyleGuide, storyData.cinematicDNA, true, gridVariations);
+      
+      // CALL API
+      const masterGridUrl = await GeminiService.generateImage(
+          `Story Segment: ${segment.text} ${charPrompt}`, 
+          options.aspectRatio, 
+          options.imageSize, 
+          refImages, 
+          storyData.visualStyleGuide, 
+          storyData.cinematicDNA, 
+          true, 
+          gridVariations,
+          continuityImage // Pass the specific continuity image here
+      );
+      
       const croppedImages = await Promise.all([0,1,2,3].map(i => cropGridCell(masterGridUrl, i)));
       setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, masterGridImageUrl: masterGridUrl, selectedGridIndices: [0, 1, 2, 3], generatedImageUrls: croppedImages, isGenerating: false } : s) }) : null);
     } catch (e: any) {
@@ -900,6 +1055,7 @@ export default function App() {
                     onStopAudio={handleStopAudio} 
                     onDeleteAudio={handleDeleteAudio}
                     onRegeneratePrompts={handleRegeneratePrompts}
+                    onRegenerateSinglePanel={handleRegenerateSinglePanel}
                 />}
             </>
         )}

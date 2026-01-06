@@ -469,17 +469,43 @@ export default function App() {
   const handleRegeneratePrompts = async (segmentId: string) => {
       if (!storyData) return;
       setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, isGenerating: true } : s) }) : null);
-      addToast("Enriching scene prompts with technical layout context...", "info");
+      addToast("Analyzing scene for continuity and spatial accuracy...", "info");
+      
       try {
-          const segment = storyData.segments.find(s => s.id === segmentId);
-          if (!segment) throw new Error("Segment not found");
+          const segmentIndex = storyData.segments.findIndex(s => s.id === segmentId);
+          if (segmentIndex === -1) throw new Error("Segment not found");
+          
+          const segment = storyData.segments[segmentIndex];
+          
+          // Get context info
           let context = `Characters: ${segment.characterIds.map(id => storyData.characters.find(c => c.id === id)?.name).join(', ')}. `;
           const setting = storyData.settings.find(s => s.id === segment.settingId);
           if (setting) { context += `Location: ${setting.name}. SPATIAL BLUEPRINT: ${setting.spatialLayout}.`; }
+          
           const fullStoryText = storyData.segments.map(s => s.text).join('\n\n');
-          const newPanels = await GeminiService.regeneratePanelPrompts(segment.text, fullStoryText, storyData.artStyle, context);
+          
+          // --- GET PREVIOUS SCENE DATA FOR CONTINUITY ---
+          let prevImage = undefined;
+          let prevText = undefined;
+          if (segmentIndex > 0) {
+              const prevSeg = storyData.segments[segmentIndex - 1];
+              prevText = prevSeg.text;
+              if (prevSeg.masterGridImageUrl) {
+                  prevImage = prevSeg.masterGridImageUrl;
+              }
+          }
+
+          const newPanels = await GeminiService.regeneratePanelPrompts(
+              segment.text, 
+              fullStoryText, 
+              storyData.artStyle, 
+              context,
+              prevImage, // Pass image
+              prevText   // Pass text
+          );
+          
           setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, panels: newPanels, isGenerating: false } : s) }) : null);
-          addToast("Prompts refined with spatial accuracy.", "success");
+          addToast("Continuity check complete. Prompts refined.", "success");
       } catch (e) {
            setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, isGenerating: false } : s) }) : null);
            addToast("Prompt refinement failed.", "error");
@@ -492,23 +518,6 @@ export default function App() {
     try {
       const segment = storyData.segments.find(s => s.id === segmentId);
       if (!segment) throw new Error("Segment not found");
-      
-      const segmentIndex = storyData.segments.findIndex(s => s.id === segmentId);
-      
-      // --- CONTINUITY LOGIC ---
-      let continuityImage: string | undefined = undefined;
-      // If this is NOT the first segment, try to get the previous segment's image to ensure visual consistency
-      if (segmentIndex > 0) {
-          const prevSeg = storyData.segments[segmentIndex - 1];
-          // Check if previous segment has a generated image (either individual or master)
-          if (prevSeg.generatedImageUrls && prevSeg.generatedImageUrls.length > 0) {
-              // Use the LAST panel of the previous segment
-              continuityImage = prevSeg.generatedImageUrls[prevSeg.generatedImageUrls.length - 1];
-          } else if (prevSeg.masterGridImageUrl) {
-              continuityImage = prevSeg.masterGridImageUrl;
-          }
-      }
-      
       const setting = storyData.settings.find(s => s.id === segment.settingId);
       let generalSettingPrompt = "";
       let settingColors = "Neutral cinematic lighting";
@@ -516,9 +525,9 @@ export default function App() {
           generalSettingPrompt = `\n\n[LOCATION]: ${setting.name}. ${setting.spatialLayout}.`;
           if (setting.colorPalette) settingColors = setting.colorPalette;
       }
-      
-      // Standard Character Refs
-      const charRefImages: string[] = [];
+      const refImages: string[] = [];
+      const firstSegment = storyData.segments[0];
+      if (firstSegment && firstSegment.masterGridImageUrl && firstSegment.id !== segmentId) { refImages.push(firstSegment.masterGridImageUrl); }
       let charPrompt = "\n\n[CHARACTERS]:";
       let characterInjection = "";
       if (segment.characterIds && segment.characterIds.length > 0) {
@@ -527,48 +536,23 @@ export default function App() {
               if (char) {
                   charPrompt += `\n- ${char.name}: ${char.description}`;
                   characterInjection += ` ${char.name} is wearing: ${char.description}. `; 
-                  if (char.imageUrl) charRefImages.push(char.imageUrl);
+                  if (char.imageUrl) refImages.push(char.imageUrl);
               }
           });
       }
-      
       const gridVariations = segment.panels ? segment.panels.map((p, idx) => {
-         // MODIFIED LOGIC: Don't force Index 0 to be establishing. Trust the 'shotType' prop.
-         const isEstablishing = p.shotType === 'ESTABLISHING';
-         
+         const isEstablishing = p.shotType === 'ESTABLISHING' || idx === 0;
          if (isEstablishing) {
              return `Panel ${idx+1} [ESTABLISHING SHOT]: ${p.visualPrompt}. SUBJECT DETAILS: ${characterInjection}. Wide angle. SHOW FULL ARCHITECTURE. ${generalSettingPrompt}. LIGHTING: Bright, well-lit scene. Ensure ${characterInjection} is clearly visible and NOT in silhouette.`;
          } else {
-             // For all other shot types (ACTION, CHARACTER, DETAIL), we use the isolation technique to prevent room hallucinations
-             // We aggressively push for 'Ethereal Bokeh' as requested to hide the background
-             return `Panel ${idx+1} [ISOLATION SHOT]: ${p.visualPrompt}. 
-             SUBJECT FOCUS: ${characterInjection}. 
-             BACKGROUND STRATEGY: Heavy Depth of Field, Ethereal Bokeh, Soft Out-of-focus Orbs, or Speed Lines.
-             CRITICAL: DO NOT draw distinct architectural details (walls/tiles) to avoid perspective errors. 
-             ATMOSPHERE COLOR: ${settingColors}.
-             COSTUME: Match the description "${characterInjection}" exactly.`;
+             return `Panel ${idx+1} [ISOLATION SHOT]: ${p.visualPrompt}. SUBJECT DETAILS: ${characterInjection}. CRITICAL RULE: DO NOT DRAW THE ROOM. - Focus ONLY on the Subject. - Background MUST BE: Abstract Blur / Bokeh / Dark Void / Speed Lines. - Color Palette: ${settingColors}. - NO furniture, NO windows, NO doors. - COSTUME: Match the description "${characterInjection}" exactly.`;
          }
       }) : [];
-      
-      if (setting && setting.imageUrl) charRefImages.push(setting.imageUrl);
-      
-      // PASS CONTINUITY IMAGE SEPARATELY
-      const masterGridUrl = await GeminiService.generateImage(
-          `Story Segment: ${segment.text} ${charPrompt}`, 
-          options.aspectRatio, 
-          options.imageSize, 
-          charRefImages, // Only character/setting refs here
-          storyData.visualStyleGuide, 
-          storyData.cinematicDNA, 
-          true, 
-          gridVariations,
-          continuityImage // New Argument
-      );
-
+      if (setting && setting.imageUrl) refImages.push(setting.imageUrl);
+      const masterGridUrl = await GeminiService.generateImage(`Story Segment: ${segment.text} ${charPrompt}`, options.aspectRatio, options.imageSize, refImages, storyData.visualStyleGuide, storyData.cinematicDNA, true, gridVariations);
       const croppedImages = await Promise.all([0,1,2,3].map(i => cropGridCell(masterGridUrl, i)));
       setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, masterGridImageUrl: masterGridUrl, selectedGridIndices: [0, 1, 2, 3], generatedImageUrls: croppedImages, isGenerating: false } : s) }) : null);
     } catch (e: any) {
-       console.error("Gen failed", e);
        setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, isGenerating: false } : s) }) : null);
        addToast("Visual generation failed.", "error");
     }
@@ -701,7 +685,8 @@ export default function App() {
             onPlayAudio={handleGenerateAndPlayAudio} 
             onStopAudio={handleStopAudio} 
             onSelectOption={handleSelectOption} 
-            onDeleteAudio={handleDeleteAudio} 
+            onDeleteAudio={handleDeleteAudio}
+            onRegeneratePrompts={handleRegeneratePrompts}
         />}
       </main>
     </div>
