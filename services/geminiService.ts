@@ -327,14 +327,15 @@ export const regeneratePanelPrompts = async (
     const schema = {
         type: Type.OBJECT,
         properties: {
+            sourceLanguage: { type: Type.STRING, description: "The detected language of the Input text (e.g. 'Czech', 'Korean')." },
             panels: { 
                 type: Type.ARRAY, 
                 items: {
                     type: Type.OBJECT,
                     properties: {
                         panelIndex: { type: Type.INTEGER },
-                        visualPrompt: { type: Type.STRING, description: "A MASSIVE, detailed paragraph (min 6 sentences). Describe Subject, Outfit, Pose, Item, Environment, Lighting." },
-                        caption: { type: Type.STRING },
+                        visualPrompt: { type: Type.STRING, description: "A MASSIVE, detailed paragraph (min 6 sentences) IN ENGLISH." },
+                        caption: { type: Type.STRING, description: "The text bubble content. MUST MATCH 'sourceLanguage' EXACTLY." },
                         cameraAngle: { type: Type.STRING },
                         shotType: { type: Type.STRING, enum: ['ESTABLISHING', 'CHARACTER', 'ACTION', 'DETAIL', 'CLOSE-UP'] }
                     },
@@ -343,49 +344,34 @@ export const regeneratePanelPrompts = async (
                 description: "Exactly 4 narrative beats."
             }
         },
-        required: ["panels"]
+        required: ["sourceLanguage", "panels"]
     };
 
     const systemInstruction = `
-    You are an expert Manhwa Director.
+    You are a Storyboard Re-Generator.
     
-    **YOUR MANDATE**:
-    1. **CONTINUITY IS GOD**: You have been given a "FORENSIC STATE" from the previous scene. You MUST use it.
-       - **OUTFIT**: If Forensic State says "White Bathrobe", your prompts MUST say "White Bathrobe". Do NOT change it to "T-shirt".
-       - **HELD ITEM**: If Forensic State says "Holding a Mop", your prompts MUST say "Holding a Mop". Do NOT change it to "Stick" or "Weapon".
-       - **EXCEPTION**: Only change these IF the current text explicitly says "She dropped the mop" or "She changed clothes".
+    **CRITICAL INSTRUCTION: LANGUAGE ANCHOR**
+    1. Detect the language of the Input Text below.
+    2. Store it in 'sourceLanguage'.
+    3. Ensure ALL 'caption' fields are in 'sourceLanguage'.
+    4. Ensure ALL 'visualPrompt' fields are in English.
     
-    2. **PROMPT LENGTH**:
-       - The user is complaining that prompts are too short.
-       - **RULE**: Every 'visualPrompt' must be at least 150 words long. 
-       - Structure it like this: "[SUBJECT]... [OUTFIT]... [ACTION]... [HELD ITEM]... [ENVIRONMENT]... [LIGHTING]..."
-       
-    3. **INFERENCE**:
-       - If the text says "I grabbed a weapon" and the location is a Bathroom, and previous item was "None", infer "Mop" or "Plunger" or "Toilet Lid". Do NOT infer "Sword".
+    **DO NOT TRANSLATE THE CAPTIONS**.
+    If Input is: "Pes štěkal." (Czech)
+    Output 'caption': "Pes štěkal."
+    Output 'visualPrompt': "A dog barking..." (English)
+    
+    **FORENSIC CONTINUITY**:
+    - Outfit: ${forensicData.exact_outfit}
+    - Item: ${forensicData.held_item}
     `;
     
     const parts: any[] = [];
     
-    // Inject the Forensic Truth directly into the context
-    const forensicContext = `
-    **LOCKED VISUAL FACTS (FROM PREVIOUS SCENE)**:
-    - OUTFIT: ${forensicData.exact_outfit}
-    - HELD ITEM: ${forensicData.held_item}
-    - ENVIRONMENT: ${forensicData.environment_state}
-    
-    *INSTRUCTION*: If the text below does not explicitly describe changing these, you MUST COPY these facts into the new prompts.
-    `;
-    
-    parts.push({ text: forensicContext });
-
     parts.push({ 
         text: `
-        **CURRENT SCENE NARRATIVE**: "${segmentText}"
-        
-        **FULL CONTEXT**: ${contextInfo}
-        **ART STYLE**: ${style}
-        
-        Generate 4 Ultra-Detailed Panels. Remember: The Mop is a Mop. The Robe is a Robe.
+        INPUT TEXT: "${segmentText}"
+        CONTEXT: ${contextInfo}
         ` 
     });
 
@@ -396,7 +382,7 @@ export const regeneratePanelPrompts = async (
             responseMimeType: "application/json",
             responseSchema: schema,
             systemInstruction: systemInstruction,
-            thinkingConfig: { thinkingBudget: 8192 } // High budget to ensure it writes long prompts
+            thinkingConfig: { thinkingBudget: 4096 }
         }
     });
 
@@ -410,6 +396,7 @@ export const analyzeStoryText = async (storyText: string, artStyle: string): Pro
   const schema = {
     type: Type.OBJECT,
     properties: {
+      sourceLanguage: { type: Type.STRING, description: "The detected language of the FULL RAW TEXT (e.g., 'Czech', 'Spanish', 'Korean')." },
       title: { type: Type.STRING },
       artStyle: { type: Type.STRING },
       visualStyleGuide: { type: Type.STRING },
@@ -434,7 +421,7 @@ export const analyzeStoryText = async (storyText: string, artStyle: string): Pro
             name: { type: Type.STRING },
             description: { type: Type.STRING, description: "General atmosphere and visual mood." },
             spatialLayout: { type: Type.STRING, description: "TECHNICAL BLUEPRINT: Where is the bed, door, window?" },
-            colorPalette: { type: Type.STRING, description: "The 3 dominant colors of this place (e.g., 'Dark Blue, Silver, White'). Used for abstract backgrounds." }
+            colorPalette: { type: Type.STRING, description: "The 3 dominant colors of this place." }
           },
           required: ["id", "name", "description", "spatialLayout", "colorPalette"]
         }
@@ -445,10 +432,9 @@ export const analyzeStoryText = async (storyText: string, artStyle: string): Pro
           type: Type.OBJECT,
           properties: {
             id: { type: Type.STRING },
-            text: { type: Type.STRING, description: "Original narrative text." },
+            text: { type: Type.STRING, description: "MUST MATCH 'sourceLanguage' EXACTLY. Verbatim copy of the input segment." },
             type: { type: Type.STRING, enum: ['MAIN', 'BRANCH', 'MERGE_POINT'] },
-            // NEW: Override field for specific scenes
-            costumeOverride: { type: Type.STRING, description: "CRITICAL: The specific outfit/state of the character in THIS segment. Example: 'Naked, wet skin, no clothes' OR 'Pajamas' OR 'Torn battle armor'. If undefined, assumes default." },
+            costumeOverride: { type: Type.STRING, description: "CRITICAL: The specific outfit/state of the character in THIS segment." },
             choices: {
                 type: Type.ARRAY,
                 items: {
@@ -469,8 +455,8 @@ export const analyzeStoryText = async (storyText: string, artStyle: string): Pro
                   type: Type.OBJECT,
                   properties: {
                       panelIndex: { type: Type.INTEGER },
-                      visualPrompt: { type: Type.STRING },
-                      caption: { type: Type.STRING },
+                      visualPrompt: { type: Type.STRING, description: "IN ENGLISH." },
+                      caption: { type: Type.STRING, description: "MUST MATCH 'sourceLanguage' EXACTLY." },
                       cameraAngle: { type: Type.STRING },
                       shotType: { type: Type.STRING, enum: ['ESTABLISHING', 'CHARACTER', 'ACTION', 'DETAIL'] }
                   },
@@ -482,23 +468,29 @@ export const analyzeStoryText = async (storyText: string, artStyle: string): Pro
         }
       }
     },
-    required: ["title", "artStyle", "segments", "characters", "settings"]
+    required: ["sourceLanguage", "title", "artStyle", "segments", "characters", "settings"]
   };
 
   const systemInstruction = `
-  You are an expert Director for Interactive Manhwa.
+  You are a Text Extraction Algorithm (v4.0).
   
-  **CRITICAL RULE FOR CLOTHING (COSTUME OVERRIDE)**:
-  - You MUST analyze the context to determine the character's clothing state for EACH segment.
-  - If the text implies bathing, sleeping, or changing, you MUST set 'costumeOverride' to describe that specific state (e.g., "Naked, bare shoulders, wet skin").
-  - This overrides their default character sheet.
+  **PRIMARY FUNCTION**:
+  You take a text input and split it into JSON segments.
   
-  **DYNAMIC CINEMATOGRAPHY (Background Strategy)**: 
-  - **Panel 1 (ESTABLISHING)**: MUST show the full room/environment clearly.
-  - **Panels 2, 3, 4 (CHARACTER/DETAIL)**: SHOULD focus on emotions/action. 
-  - **INSTRUCTION**: For Panels 2, 3, and 4, the 'visualPrompt' should explicitly ask for "White background", "Blurred background", "Speed lines", or "Abstract color wash" instead of detailed furniture.
+  **STRICT CONSTRAINT: PHOTOCOPYING MODE**
+  1. You are FORBIDDEN from generating original text for the 'text' or 'caption' fields.
+  2. You must COPY the source text character-for-character.
+  3. If the input is in Portuguese, the output 'text' MUST be in Portuguese.
+  4. If the input is in Czech, the output 'text' MUST be in Czech.
   
-  **CHUNK RULE**: VERBATIM segments of 3-4 sentences.
+  **INTERNAL LOGIC**:
+  [INPUT] -> [DETECT LANGUAGE] -> [COPY TEXT TO JSON] -> [GENERATE ENGLISH VISUAL PROMPTS]
+  
+  **VISUAL INSTRUCTION**:
+  - 'visualPrompt': Must be in ENGLISH. Describe the scene for an image generator.
+  
+  **VERIFICATION**:
+  - Does 'text' match the source input verbatim? YES/NO. If NO, retry.
   `;
 
   const response = await ai.models.generateContent({
@@ -512,7 +504,12 @@ export const analyzeStoryText = async (storyText: string, artStyle: string): Pro
     }
   });
 
-  return JSON.parse(response.text || "{}");
+  const result = JSON.parse(response.text || "{}");
+  // We can log the detected language for debugging if needed
+  if (result.sourceLanguage) {
+      console.log(`Detected Story Language: ${result.sourceLanguage}`);
+  }
+  return result;
 };
 
 export const generateImage = async (

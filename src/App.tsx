@@ -1,13 +1,12 @@
-
 import React, { useState, useEffect, useRef } from 'react';
-import { Layout, Clapperboard, Layers, ChevronRight, Key, ExternalLink, Download, Upload, XCircle, CheckCircle, Info, AlertTriangle, Users, BookOpen, PenTool, Languages, Home as HomeIcon, Plus, Palette, Book, Globe, Library, FileText, Image as ImageIcon } from 'lucide-react';
+import { Layout, Clapperboard, Layers, ChevronRight, Key, ExternalLink, Download, Upload, XCircle, CheckCircle, Info, AlertTriangle, Users, BookOpen, PenTool, Languages, Home as HomeIcon, Plus, Palette, Book, Globe, Library, FileText, Image as ImageIcon, Zap, Trash, RefreshCw } from 'lucide-react';
 import StoryInput from './components/StoryInput';
 import AssetGallery from './components/AssetGallery';
 import Storyboard from './components/Storyboard';
 import { StoryData, ProcessingStatus, AspectRatio, ImageSize, TranslationCache } from './types';
 import * as GeminiService from './services/geminiService';
 import * as StorageService from './services/storageService';
-import { cropGridCell } from './utils/imageUtils';
+import { cropGridCell, compressImage } from './utils/imageUtils';
 import SlideshowPlayer from './components/SlideshowPlayer';
 
 enum View {
@@ -132,36 +131,80 @@ export default function App() {
     }
   };
 
+  const handleReAnalyze = async () => {
+      if (!storyData) return;
+      if (window.confirm("This will regenerate the entire story structure from the text. Are you sure?")) {
+        const fullText = storyData.segments.map(s => s.text).join('\n\n');
+        await handleAnalyzeStory(fullText, storyData.artStyle);
+      }
+  };
+
+  const handleClearProject = () => {
+      if(window.confirm("Clear current project? Unsaved changes will be lost.")) {
+          setStoryData(null);
+          setActiveTab(Tab.INPUT);
+      }
+  };
+
   const handleCreateNewStory = () => {
       setCurrentView(View.STUDIO);
       setActiveTab(Tab.INPUT);
       setStoryData(null);
   };
 
-  // NEW: Batch Translation Feature
-  const handleBatchTranslate = async () => {
+  // UPDATED: Batch Translation Feature (Now supports FORCE PURGE)
+  const handleBatchTranslate = async (forceRefresh: boolean = false) => {
     if (!storyData || isBatchTranslating) return;
     
     setIsBatchTranslating(true);
-    addToast("Starting batch translation for all languages...", "info");
+    const msg = forceRefresh ? "Purging existing translations and regenerating..." : "Diagnosing & Repairing translations...";
+    addToast(msg, "info");
 
-    const languagesToTranslate = LANGUAGES.map(l => l.code).filter(code => code !== "English"); // Assume English is base (or check native)
+    const languagesToTranslate = LANGUAGES.map(l => l.code).filter(code => code !== "English"); 
 
     let updatedSegments = [...storyData.segments];
     let updatedCompletion = { ...(storyData.completedTranslations || {}) };
-    let completedCount = 0;
 
+    // STEP 1: If Force Refresh, Wipe EVERYTHING first (Atomic Wipe)
+    if (forceRefresh) {
+        updatedSegments = updatedSegments.map(s => {
+             // Create a clean copy of translations without the target languages
+             const newTrans = { ...(s.translations || {}) };
+             languagesToTranslate.forEach(lang => {
+                 delete newTrans[lang];
+             });
+             return { ...s, translations: newTrans };
+        });
+        
+        // Also reset completion status
+        languagesToTranslate.forEach(lang => {
+             delete updatedCompletion[lang];
+        });
+        
+        // Save this "Wiped" state immediately so UI updates and user sees "it's gone"
+        setStoryData(prev => prev ? ({ ...prev, segments: updatedSegments, completedTranslations: updatedCompletion }) : null);
+        
+        // Small delay to let UI breathe
+        await new Promise(r => setTimeout(r, 500));
+    }
+
+    // STEP 2: Process Translations in batch chunks
     for (const targetLang of languagesToTranslate) {
          try {
-             addToast(`Translating to ${targetLang}... (${completedCount + 1}/${languagesToTranslate.length})`, "info");
+             // Identify segments needing work (if forced, this will be ALL segments)
+             const segmentsToTranslate = updatedSegments.filter(s => {
+                 const translation = s.translations?.[targetLang];
+                 // Missing entirely or empty?
+                 if (!translation || !translation.text || translation.text.trim() === '') return true;
+                 return false;
+             });
              
-             // Check if all segments already have this language (avoid re-translating if fully cached)
-             const needsTranslation = updatedSegments.some(s => !s.translations?.[targetLang]);
-             
-             if (needsTranslation) {
-                 const translatedResults = await GeminiService.translateSegments(updatedSegments, targetLang);
+             if (segmentsToTranslate.length > 0) {
+                 addToast(`Translating ${segmentsToTranslate.length} segments into ${targetLang}...`, "info");
                  
-                 // Merge results into the segments' translation map
+                 const translatedResults = await GeminiService.translateSegments(segmentsToTranslate, targetLang);
+                 
+                 // Merge results
                  updatedSegments = updatedSegments.map(seg => {
                      const translatedSeg = translatedResults.find(t => t.id === seg.id);
                      if (!translatedSeg) return seg;
@@ -180,18 +223,17 @@ export default function App() {
                      };
                  });
              }
-             // Mark language as complete
+
              updatedCompletion[targetLang] = true;
-             completedCount++;
          } catch (e) {
              console.error(`Failed to translate to ${targetLang}`, e);
-             addToast(`Failed to translate to ${targetLang}. Skipping.`, "error");
+             addToast(`Error processing ${targetLang}. Skipping.`, "error");
          }
     }
 
     setStoryData({ ...storyData, segments: updatedSegments, completedTranslations: updatedCompletion });
     setIsBatchTranslating(false);
-    addToast("Batch translation complete! Translations are saved in the project.", "success");
+    addToast("Translation process complete.", "success");
   };
 
   // NEW: Batch Vocabulary Generation
@@ -205,7 +247,6 @@ export default function App() {
           const wordsByLang: Record<string, Set<string>> = {};
 
           // Helper to add words cleanly using Unicode properties
-          // Removes everything that is NOT a Letter (L) or Number (N)
           const cleanWordRegex = /[^\p{L}\p{N}]+/gu;
 
           const collect = (lang: string, candidates: string[]) => {
@@ -256,10 +297,7 @@ export default function App() {
           // Process each language
           for (const [sourceLang, wordSet] of Object.entries(wordsByLang)) {
               addToast(`Indexing vocabulary for ${sourceLang}...`, "info");
-              
-              // REMOVED THE .slice(0, 100) LIMIT. Now processes all unique words.
               const uniqueWords = Array.from(wordSet);
-
               if (uniqueWords.length === 0) continue;
 
               const targetLangs = LANGUAGES.map(l => l.code);
@@ -275,8 +313,6 @@ export default function App() {
                   );
 
                   if (wordsToFetch.length > 0) {
-                      // Process in batches implicitly handled by service or we loop here
-                      // We'll loop here to ensure UI responsiveness updates
                       const BATCH_SIZE = 50;
                       for (let i = 0; i < wordsToFetch.length; i += BATCH_SIZE) {
                           const batch = wordsToFetch.slice(i, i + BATCH_SIZE);
@@ -286,8 +322,6 @@ export default function App() {
                               if (!updatedVocabulary[word]) updatedVocabulary[word] = {};
                               updatedVocabulary[word][targetLang] = def;
                           });
-                          
-                          // Optional: Update state progressively (optional, might cause re-renders)
                       }
                   }
               }
@@ -309,7 +343,6 @@ export default function App() {
     setIsTranslating(true);
     
     try {
-        // 1. Check if we already have the translation in cache
         const isTranslationAvailable = storyData.segments.every(s => 
             (s.translations && s.translations[learningLanguage])
         );
@@ -317,8 +350,6 @@ export default function App() {
         let translatedSegments;
 
         if (isTranslationAvailable) {
-            console.log("Using cached translations.");
-            // Reconstruct segments from cache
             translatedSegments = storyData.segments.map(s => {
                 const cache = s.translations![learningLanguage];
                 return {
@@ -331,9 +362,7 @@ export default function App() {
             });
             addToast(`Opening ${learningLanguage} Reader (Cached).`, "success");
         } else {
-            console.log("Translation not found in cache. Generating...");
             addToast(`Translating story to ${learningLanguage}...`, "info");
-            // Translate on the fly
             translatedSegments = await GeminiService.translateSegments(storyData.segments, learningLanguage);
         }
         
@@ -355,7 +384,6 @@ export default function App() {
     }
   };
 
-  // ... (Asset & Gen Handlers)
   const handleUploadAsset = (type: 'character' | 'setting' | 'cover', id: string, file: File) => {
     if (!storyData) return;
     if (!file.type.startsWith('image/')) {
@@ -363,24 +391,24 @@ export default function App() {
         return;
     }
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
         const result = e.target?.result as string;
         if (result) {
+            const compressedResult = await compressImage(result, 0.85);
             setStoryData(prev => {
                 if (!prev) return null;
                 if (type === 'cover') {
-                    return { ...prev, cover: { imageUrl: result } };
+                    return { ...prev, cover: { imageUrl: compressedResult } };
                 }
                 if (type === 'character') {
-                    return { ...prev, characters: prev.characters.map(c => c.id === id ? { ...c, imageUrl: result } : c) };
+                    return { ...prev, characters: prev.characters.map(c => c.id === id ? { ...c, imageUrl: compressedResult } : c) };
                 } else {
-                    return { ...prev, settings: prev.settings.map(s => s.id === id ? { ...s, imageUrl: result } : s) };
+                    return { ...prev, settings: prev.settings.map(s => s.id === id ? { ...s, imageUrl: compressedResult } : s) };
                 }
             });
             addToast("Asset uploaded successfully", "success");
         }
     };
-    reader.onerror = () => addToast("Failed to read file", "error");
     reader.readAsDataURL(file);
   };
 
@@ -390,40 +418,14 @@ export default function App() {
       addToast("Designing vertical cover art...", "info");
       
       try {
-          // 1. Generate Prompt
-          const prompt = await GeminiService.generateCoverPrompt(
-              storyData.title,
-              storyData.characters,
-              storyData.segments.map(s => s.text).join(' '),
-              storyData.artStyle
-          );
-
-          // 2. Gather References (Main Characters)
+          const prompt = await GeminiService.generateCoverPrompt(storyData.title, storyData.characters, storyData.segments.map(s => s.text).join(' '), storyData.artStyle);
           const refImages: string[] = [];
-          storyData.characters.forEach(c => {
-              if (c.imageUrl) refImages.push(c.imageUrl);
-          });
+          storyData.characters.forEach(c => { if (c.imageUrl) refImages.push(c.imageUrl); });
 
-          // 3. Generate Image (3:4)
-          const imageUrl = await GeminiService.generateImage(
-              prompt,
-              AspectRatio.PORTRAIT,
-              ImageSize.K1,
-              refImages,
-              storyData.visualStyleGuide,
-              storyData.cinematicDNA
-          );
+          const imageUrl = await GeminiService.generateImage(prompt, AspectRatio.PORTRAIT, ImageSize.K1, refImages, storyData.visualStyleGuide, storyData.cinematicDNA);
 
-          setStoryData(prev => prev ? ({ 
-              ...prev, 
-              cover: { 
-                  imageUrl, 
-                  visualPrompt: prompt, 
-                  isGenerating: false 
-              } 
-          }) : null);
+          setStoryData(prev => prev ? ({ ...prev, cover: { imageUrl, visualPrompt: prompt, isGenerating: false } }) : null);
           addToast("Cover art generated.", "success");
-
       } catch (e) {
           setStoryData(prev => prev ? ({ ...prev, cover: { ...prev.cover, isGenerating: false } }) : null);
           addToast("Cover generation failed.", "error");
@@ -437,11 +439,7 @@ export default function App() {
     try {
       const char = storyData.characters.find(c => c.id === id);
       if (!char) return;
-      const prompt = `Professional Manhwa Character Design Sheet for: ${char.name}.
-      VISUAL STYLE: High-quality Korean Webtoon / Anime style. Cel-shaded coloring. Sharp, clean line art.
-      LAYOUT REQUIREMENT: 4 distinct poses (Front, Side, Back, Face) on a pure solid WHITE background.
-      CHARACTER DETAILS: ${char.description}.`;
-
+      const prompt = `Professional Manhwa Character Design Sheet for: ${char.name}. Korean Webtoon style. Cel-shaded. 4 distinct poses on WHITE background. ${char.description}.`;
       const imageUrl = await GeminiService.generateImage(prompt, AspectRatio.WIDE, ImageSize.K1, [], storyData.visualStyleGuide, storyData.cinematicDNA, false);
       setStoryData(prev => prev ? ({ ...prev, characters: prev.characters.map(c => c.id === id ? { ...c, imageUrl, isGenerating: false } : c) }) : null);
     } catch (e) {
@@ -457,7 +455,7 @@ export default function App() {
     try {
       const setting = storyData.settings.find(s => s.id === id);
       if (!setting) return;
-      const prompt = `create a 16x9 image of the location ${setting.name}, where half is the ${setting.name} in isometric view and the other is the same ${setting.name} but top-down view. ${setting.description}. white background. no text.`;
+      const prompt = `create a 16x9 image of the location ${setting.name}, where half is isometric view and the other is top-down view. ${setting.description}. white background. no text.`;
       const imageUrl = await GeminiService.generateImage(prompt, AspectRatio.WIDE, ImageSize.K1, [], storyData.visualStyleGuide, storyData.cinematicDNA, false);
       setStoryData(prev => prev ? ({ ...prev, settings: prev.settings.map(s => s.id === id ? { ...s, imageUrl, isGenerating: false } : s) }) : null);
     } catch (e) {
@@ -466,53 +464,80 @@ export default function App() {
     }
   };
 
-  const handleRegeneratePrompts = async (segmentId: string) => {
+  const handleRegeneratePrompts = async (segmentId: string, continuitySegmentId?: string) => {
       if (!storyData) return;
       setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, isGenerating: true } : s) }) : null);
-      addToast("Analyzing scene for continuity and spatial accuracy...", "info");
+      addToast("Analyzing scene for continuity...", "info");
       
       try {
           const segmentIndex = storyData.segments.findIndex(s => s.id === segmentId);
-          if (segmentIndex === -1) throw new Error("Segment not found");
-          
           const segment = storyData.segments[segmentIndex];
-          
-          // Get context info
           let context = `Characters: ${segment.characterIds.map(id => storyData.characters.find(c => c.id === id)?.name).join(', ')}. `;
           const setting = storyData.settings.find(s => s.id === segment.settingId);
           if (setting) { context += `Location: ${setting.name}. SPATIAL BLUEPRINT: ${setting.spatialLayout}.`; }
-          
           const fullStoryText = storyData.segments.map(s => s.text).join('\n\n');
           
-          // --- GET PREVIOUS SCENE DATA FOR CONTINUITY ---
           let prevImage = undefined;
           let prevText = undefined;
-          if (segmentIndex > 0) {
+
+          if (continuitySegmentId) {
+              const continuitySeg = storyData.segments.find(s => s.id === continuitySegmentId);
+              if (continuitySeg) {
+                  prevText = continuitySeg.text;
+                  if (continuitySeg.masterGridImageUrl) prevImage = continuitySeg.masterGridImageUrl;
+              }
+          } else if (segmentIndex > 0) {
               const prevSeg = storyData.segments[segmentIndex - 1];
               prevText = prevSeg.text;
-              if (prevSeg.masterGridImageUrl) {
-                  prevImage = prevSeg.masterGridImageUrl;
-              }
+              if (prevSeg.masterGridImageUrl) prevImage = prevSeg.masterGridImageUrl;
           }
 
-          const newPanels = await GeminiService.regeneratePanelPrompts(
-              segment.text, 
-              fullStoryText, 
-              storyData.artStyle, 
-              context,
-              prevImage, // Pass image
-              prevText   // Pass text
-          );
-          
+          const newPanels = await GeminiService.regeneratePanelPrompts(segment.text, fullStoryText, storyData.artStyle, context, prevImage, prevText);
           setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, panels: newPanels, isGenerating: false } : s) }) : null);
-          addToast("Continuity check complete. Prompts refined.", "success");
+          addToast("Continuity check complete.", "success");
       } catch (e) {
            setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, isGenerating: false } : s) }) : null);
            addToast("Prompt refinement failed.", "error");
       }
   };
 
-  const handleGenerateScene = async (segmentId: string, options: { aspectRatio: AspectRatio, imageSize: ImageSize, referenceViewUrl?: string }) => {
+  const handleRegenerateSinglePanel = async (segmentId: string, panelIndex: number, instruction: string) => {
+      if (!storyData) return;
+      addToast(`Regenerating Panel #${panelIndex + 1}...`, "info");
+      try {
+          const segment = storyData.segments.find(s => s.id === segmentId);
+          if (!segment || !segment.panels || !segment.panels[panelIndex]) throw new Error("Panel not found");
+          const originalPrompt = segment.panels[panelIndex].visualPrompt;
+          const refinedPrompt = `[CONTEXT]: ${originalPrompt} \n [FIX]: ${instruction} \n Modify strictly.`;
+          
+          const refImages: string[] = [];
+          segment.characterIds.forEach(charId => {
+              const char = storyData.characters.find(c => c.id === charId);
+              if (char && char.imageUrl) refImages.push(char.imageUrl);
+          });
+          const setting = storyData.settings.find(s => s.id === segment.settingId);
+          if (setting && setting.imageUrl) refImages.push(setting.imageUrl);
+
+          const newImageUrl = await GeminiService.generateImage(refinedPrompt, AspectRatio.MOBILE, ImageSize.K1, refImages, storyData.visualStyleGuide, storyData.cinematicDNA, false);
+          
+          setStoryData(prev => {
+              if (!prev) return null;
+              return {
+                  ...prev,
+                  segments: prev.segments.map(s => {
+                      if (s.id !== segmentId) return s;
+                      const newImageUrls = [...(s.generatedImageUrls || [])];
+                      while(newImageUrls.length <= panelIndex) newImageUrls.push(s.masterGridImageUrl || "");
+                      newImageUrls[panelIndex] = newImageUrl;
+                      return { ...s, generatedImageUrls: newImageUrls };
+                  })
+              };
+          });
+          addToast("Panel regenerated.", "success");
+      } catch (e) { addToast("Failed to regenerate panel.", "error"); }
+  };
+
+  const handleGenerateScene = async (segmentId: string, options: { aspectRatio: AspectRatio, imageSize: ImageSize, referenceViewUrl?: string, continuitySegmentId?: string, locationContinuityUrls?: string[] }) => {
     if (!storyData) return;
     setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, isGenerating: true } : s) }) : null);
     try {
@@ -520,36 +545,44 @@ export default function App() {
       if (!segment) throw new Error("Segment not found");
       const setting = storyData.settings.find(s => s.id === segment.settingId);
       let generalSettingPrompt = "";
-      let settingColors = "Neutral cinematic lighting";
-      if (setting) {
-          generalSettingPrompt = `\n\n[LOCATION]: ${setting.name}. ${setting.spatialLayout}.`;
-          if (setting.colorPalette) settingColors = setting.colorPalette;
-      }
+      if (setting) generalSettingPrompt = `\n\n[LOCATION]: ${setting.name}. ${setting.spatialLayout}.`;
+      
       const refImages: string[] = [];
-      const firstSegment = storyData.segments[0];
-      if (firstSegment && firstSegment.masterGridImageUrl && firstSegment.id !== segmentId) { refImages.push(firstSegment.masterGridImageUrl); }
+      let continuityImage: string | undefined = undefined;
+      let locationContinuityImages: string[] = options.locationContinuityUrls || [];
+      
+      if (options.continuitySegmentId) {
+          const continuitySeg = storyData.segments.find(s => s.id === options.continuitySegmentId);
+          if (continuitySeg?.masterGridImageUrl) continuityImage = continuitySeg.masterGridImageUrl;
+      } else {
+          const segmentIndex = storyData.segments.findIndex(s => s.id === segmentId);
+          if (segmentIndex > 0) {
+              const prevSeg = storyData.segments[segmentIndex - 1];
+              if (prevSeg.masterGridImageUrl) continuityImage = prevSeg.masterGridImageUrl;
+          }
+      }
+
       let charPrompt = "\n\n[CHARACTERS]:";
       let characterInjection = "";
-      if (segment.characterIds && segment.characterIds.length > 0) {
-          segment.characterIds.forEach(charId => {
-              const char = storyData.characters.find(c => c.id === charId);
-              if (char) {
-                  charPrompt += `\n- ${char.name}: ${char.description}`;
-                  characterInjection += ` ${char.name} is wearing: ${char.description}. `; 
-                  if (char.imageUrl) refImages.push(char.imageUrl);
-              }
-          });
-      }
+      segment.characterIds.forEach(charId => {
+          const char = storyData.characters.find(c => c.id === charId);
+          if (char) {
+              charPrompt += `\n- ${char.name}: ${char.description}`;
+              characterInjection += ` ${char.name} is wearing: ${char.description}. `; 
+              if (char.imageUrl) refImages.push(char.imageUrl);
+          }
+      });
+      
       const gridVariations = segment.panels ? segment.panels.map((p, idx) => {
-         const isEstablishing = p.shotType === 'ESTABLISHING' || idx === 0;
-         if (isEstablishing) {
-             return `Panel ${idx+1} [ESTABLISHING SHOT]: ${p.visualPrompt}. SUBJECT DETAILS: ${characterInjection}. Wide angle. SHOW FULL ARCHITECTURE. ${generalSettingPrompt}. LIGHTING: Bright, well-lit scene. Ensure ${characterInjection} is clearly visible and NOT in silhouette.`;
+         if (p.shotType === 'ESTABLISHING' || idx === 0) {
+             return `Panel ${idx+1} [ESTABLISHING SHOT]: ${p.visualPrompt}. ${generalSettingPrompt}. LIGHTING: Bright.`;
          } else {
-             return `Panel ${idx+1} [ISOLATION SHOT]: ${p.visualPrompt}. SUBJECT DETAILS: ${characterInjection}. CRITICAL RULE: DO NOT DRAW THE ROOM. - Focus ONLY on the Subject. - Background MUST BE: Abstract Blur / Bokeh / Dark Void / Speed Lines. - Color Palette: ${settingColors}. - NO furniture, NO windows, NO doors. - COSTUME: Match the description "${characterInjection}" exactly.`;
+             return `Panel ${idx+1} [ISOLATION SHOT]: ${p.visualPrompt}. Focus on Subject. Blur Background.`;
          }
       }) : [];
       if (setting && setting.imageUrl) refImages.push(setting.imageUrl);
-      const masterGridUrl = await GeminiService.generateImage(`Story Segment: ${segment.text} ${charPrompt}`, options.aspectRatio, options.imageSize, refImages, storyData.visualStyleGuide, storyData.cinematicDNA, true, gridVariations);
+      
+      const masterGridUrl = await GeminiService.generateImage(`Story: ${segment.text} ${charPrompt}`, options.aspectRatio, options.imageSize, refImages, storyData.visualStyleGuide, storyData.cinematicDNA, true, gridVariations, continuityImage, locationContinuityImages);
       const croppedImages = await Promise.all([0,1,2,3].map(i => cropGridCell(masterGridUrl, i)));
       setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, masterGridImageUrl: masterGridUrl, selectedGridIndices: [0, 1, 2, 3], generatedImageUrls: croppedImages, isGenerating: false } : s) }) : null);
     } catch (e: any) {
@@ -578,54 +611,27 @@ export default function App() {
   };
 
   const handleGenerateAndPlayAudio = async (segmentId: string, text: string): Promise<void> => {
-      // Use readerData if in reader mode, otherwise storyData
       const sourceData = showReader ? readerData : storyData;
       if (!sourceData) return;
-
       const segment = sourceData.segments.find(s => s.id === segmentId);
       if (segment?.audioUrl) {
           const audio = new Audio(segment.audioUrl);
           await audio.play();
           return;
       }
-      
-      const updateState = (data: StoryData) => {
-          if (showReader) setReaderData(data);
-          else setStoryData(data);
-      };
-
+      const updateState = (data: StoryData) => { if (showReader) setReaderData(data); else setStoryData(data); };
       updateState({ ...sourceData, segments: sourceData.segments.map(s => s.id === segmentId ? { ...s, isGenerating: true } : s) });
-      
       try {
-          // Use the text provided (which might be translated)
           const audioBuffer = await GeminiService.generateSpeech(text, selectedVoice);
           const blob = GeminiService.createWavBlob(audioBuffer);
           const url = URL.createObjectURL(blob);
           const duration = audioBuffer.byteLength / 48000;
-          
-          updateState({
-              ...sourceData, 
-              segments: sourceData.segments.map(s => s.id === segmentId ? { ...s, audioUrl: url, audioDuration: duration, isGenerating: false } : s)
-          });
-      } catch (e) {
-          updateState({ ...sourceData, segments: sourceData.segments.map(s => s.id === segmentId ? { ...s, isGenerating: false } : s) });
-      }
+          updateState({ ...sourceData, segments: sourceData.segments.map(s => s.id === segmentId ? { ...s, audioUrl: url, audioDuration: duration, isGenerating: false } : s) });
+      } catch (e) { updateState({ ...sourceData, segments: sourceData.segments.map(s => s.id === segmentId ? { ...s, isGenerating: false } : s) }); }
   };
 
-  // NEW: Handler for Export Text
-  const handleExportText = () => {
-    if (storyData) {
-        StorageService.exportStoryText(storyData);
-    }
-  };
-
-  // NEW: Handler for Exporting Image Prompts
-  const handleExportPrompts = () => {
-     if (storyData) {
-         StorageService.exportImagePrompts(storyData);
-     }
-  };
-
+  const handleExportText = () => { if (storyData) StorageService.exportStoryText(storyData); };
+  const handleExportPrompts = () => { if (storyData) StorageService.exportImagePrompts(storyData); };
   const handleStopAudio = () => GeminiService.stopAudio();
   const handleExport = async () => { if (storyData) await StorageService.exportProject(storyData); };
   const handleImportClick = () => fileInputRef.current?.click();
@@ -635,7 +641,6 @@ export default function App() {
     try {
       const { data } = await StorageService.importProject(file);
       setStoryData(data);
-      // If importing, default to Studio
       setCurrentView(View.STUDIO);
       setStatus(ProcessingStatus.READY);
       setActiveTab(Tab.STORYBOARD);
@@ -656,38 +661,182 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0f172a] text-slate-200 relative z-50">
-      <nav className="border-b border-slate-800 bg-[#0f172a]/95 sticky top-0 z-50 backdrop-blur h-16 flex items-center px-4 md:px-8 justify-between">
-          <div className="flex items-center gap-2">
-              <Layout className="w-8 h-8 text-indigo-500" />
-              <span className="text-xl font-bold">StoryBoard AI</span>
+    <div className="min-h-screen bg-[#0f172a] text-slate-200 relative z-50 flex flex-col">
+      <div className="fixed bottom-6 right-6 z-[9999] flex flex-col gap-3 pointer-events-none">
+        {toasts.map(t => (
+          <div key={t.id} className={`pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-lg shadow-2xl border border-white/10 backdrop-blur-md animate-fade-in ${t.type === 'error' ? 'bg-red-500/90' : t.type === 'success' ? 'bg-emerald-500/90' : 'bg-slate-800/90'} text-white`}>
+            {t.type === 'error' && <XCircle className="w-5 h-5 shrink-0" />}
+            {t.type === 'success' && <CheckCircle className="w-5 h-5 shrink-0" />}
+            {t.type === 'info' && <Info className="w-5 h-5 shrink-0" />}
+            <span className="text-sm font-medium">{t.message}</span>
           </div>
-          <div className="flex gap-4">
-               <input type="file" ref={fileInputRef} className="hidden" accept=".zip" onChange={handleFileChange} />
-               <button onClick={handleImportClick} className="px-3 py-1.5 bg-slate-800 rounded border border-slate-700 flex items-center gap-2"><Upload className="w-4 h-4" /> Import</button>
-               {storyData && <button onClick={handleExport} className="px-3 py-1.5 bg-slate-800 rounded border border-slate-700 flex items-center gap-2"><Download className="w-4 h-4" /> Export</button>}
-               {storyData && (
-                <div className="flex bg-slate-800 rounded p-1">
-                  <button onClick={() => setActiveTab(Tab.INPUT)} className={`px-4 py-1.5 rounded text-sm ${activeTab === Tab.INPUT ? 'bg-indigo-600' : ''}`}>Story</button>
-                  <button onClick={() => setActiveTab(Tab.ASSETS)} className={`px-4 py-1.5 rounded text-sm ${activeTab === Tab.ASSETS ? 'bg-indigo-600' : ''}`}>Assets</button>
-                  <button onClick={() => setActiveTab(Tab.STORYBOARD)} className={`px-4 py-1.5 rounded text-sm ${activeTab === Tab.STORYBOARD ? 'bg-indigo-600' : ''}`}>Storyboard</button>
-                </div>
-              )}
+        ))}
+      </div>
+
+      {/* Main Navbar */}
+      <nav className="border-b border-slate-800 bg-[#0f172a]/95 sticky top-0 z-50 backdrop-blur min-h-[4rem] flex flex-col md:flex-row items-center px-4 md:px-8 justify-between py-3 md:py-0 gap-4 md:gap-0">
+          <div className="flex items-center gap-6 self-start md:self-center">
+              <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center transform -rotate-3">
+                    <span className="font-serif font-black text-white text-lg">L</span>
+                  </div>
+                  <span className="text-lg md:text-xl font-black whitespace-nowrap tracking-tight">Lingotoons</span>
+              </div>
+              <div className="h-6 w-px bg-slate-700 hidden md:block"></div>
+              <div className="flex bg-slate-900 rounded-lg p-1 border border-slate-700">
+                  <button onClick={() => setCurrentView(View.FRONTEND)} className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${currentView === View.FRONTEND ? 'bg-white text-slate-900 shadow' : 'text-slate-400 hover:text-white'}`}>
+                      <HomeIcon className="w-3.5 h-3.5" /> Reader
+                  </button>
+                  <button onClick={() => setCurrentView(View.STUDIO)} className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${currentView === View.STUDIO ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}>
+                      <Palette className="w-3.5 h-3.5" /> Studio
+                  </button>
+              </div>
+          </div>
+          
+          <div className="flex flex-wrap items-center justify-center gap-2 md:gap-4 w-full md:w-auto">
+               {currentView === View.STUDIO && (
+                 <>
+                   <div className="flex items-center gap-2">
+                     <input type="file" ref={fileInputRef} className="hidden" accept=".zip" onChange={handleFileChange} />
+                     <button onClick={handleImportClick} className="p-2 md:px-3 md:py-1.5 bg-slate-800 rounded border border-slate-700 flex items-center gap-2 hover:bg-slate-700 transition-colors" title="Import Project">
+                       <Upload className="w-4 h-4" /> 
+                       <span className="hidden md:inline text-xs font-bold">Import</span>
+                     </button>
+                     
+                     {storyData && (
+                        <>
+                            <button onClick={handleReAnalyze} className="p-2 md:px-3 md:py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 border border-amber-500/50 rounded flex items-center gap-2 transition-all" title="Repair Narrative Structure">
+                                <Zap className="w-4 h-4 fill-current" /> 
+                                <span className="hidden md:inline text-xs font-bold">Re-Analyze</span>
+                            </button>
+
+                            <div className="flex bg-slate-800 rounded border border-slate-700 items-center">
+                                <button onClick={() => handleBatchTranslate(false)} disabled={isBatchTranslating} className="p-2 md:px-3 md:py-1.5 flex items-center gap-2 hover:bg-indigo-600 hover:text-white transition-colors disabled:opacity-50 border-r border-slate-700" title="Batch Translate (Cached)">
+                                    <Globe className={`w-4 h-4 ${isBatchTranslating ? 'animate-spin' : ''}`} /> 
+                                    <span className="hidden md:inline text-xs font-bold">Translate All</span>
+                                </button>
+                                <button 
+                                    onClick={() => handleBatchTranslate(true)} 
+                                    disabled={isBatchTranslating} 
+                                    className="p-2 hover:bg-red-600 hover:text-white transition-colors disabled:opacity-50 border-r border-slate-700 text-red-400" 
+                                    title="PURGE & RE-TRANSLATE (Wipes all existing translations and regenerates them)"
+                                >
+                                    <RefreshCw className={`w-4 h-4 ${isBatchTranslating ? 'animate-spin' : ''}`} />
+                                </button>
+                                <button onClick={handleBatchVocabulary} disabled={isVocabGenerating} className="p-2 md:px-3 md:py-1.5 flex items-center gap-2 hover:bg-emerald-600 hover:text-white transition-colors disabled:opacity-50" title="Generate Glossary">
+                                    <Library className={`w-4 h-4 ${isVocabGenerating ? 'animate-spin' : ''}`} /> 
+                                    <span className="hidden md:inline text-xs font-bold">Gen Glossary</span>
+                                </button>
+                            </div>
+                            
+                            <button onClick={handleExportPrompts} className="p-2 md:px-3 md:py-1.5 bg-slate-800 rounded border border-slate-700 flex items-center gap-2 hover:bg-slate-700 transition-colors" title="Export Image Prompts">
+                                <ImageIcon className="w-4 h-4" /> 
+                                <span className="hidden md:inline text-xs font-bold">Export Prompts</span>
+                            </button>
+                            <button onClick={handleExportText} className="p-2 md:px-3 md:py-1.5 bg-slate-800 rounded border border-slate-700 flex items-center gap-2 hover:bg-slate-700 transition-colors" title="Export Script">
+                                <FileText className="w-4 h-4" /> 
+                                <span className="hidden md:inline text-xs font-bold">Export Text</span>
+                            </button>
+                            <button onClick={handleExport} className="p-2 md:px-3 md:py-1.5 bg-slate-800 rounded border border-slate-700 flex items-center gap-2 hover:bg-slate-700 transition-colors" title="Full Project Export">
+                                <Download className="w-4 h-4" /> 
+                                <span className="hidden md:inline text-xs font-bold">Export</span>
+                            </button>
+                            <button onClick={handleClearProject} className="p-2 md:px-3 md:py-1.5 bg-red-900/20 border border-red-500/30 text-red-400 hover:bg-red-500 hover:text-white rounded flex items-center gap-2 transition-colors ml-2" title="Clear Project">
+                                <Trash className="w-4 h-4" /> 
+                                <span className="hidden md:inline text-xs font-bold">Clear</span>
+                            </button>
+                        </>
+                     )}
+                   </div>
+
+                   {storyData && (
+                    <div className="flex bg-slate-900 border border-slate-800 rounded-lg p-0.5 shadow-inner">
+                      <button onClick={() => setActiveTab(Tab.INPUT)} className={`flex items-center gap-2 px-3 md:px-4 py-1.5 rounded-md text-xs font-bold transition-all ${activeTab === Tab.INPUT ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}>
+                        <span className="hidden md:inline">Story</span><span className="md:hidden">Story</span>
+                      </button>
+                      <button onClick={() => setActiveTab(Tab.ASSETS)} className={`flex items-center gap-2 px-3 md:px-4 py-1.5 rounded-md text-xs font-bold transition-all ${activeTab === Tab.ASSETS ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}>
+                        <span className="hidden md:inline">Characters</span><span className="md:hidden">Assets</span>
+                      </button>
+                      <button onClick={() => setActiveTab(Tab.STORYBOARD)} className={`flex items-center gap-2 px-3 md:px-4 py-1.5 rounded-md text-xs font-bold transition-all ${activeTab === Tab.STORYBOARD ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}>
+                        <span className="hidden md:inline">Manga Panels</span><span className="md:hidden">Manga</span>
+                      </button>
+                    </div>
+                  )}
+                 </>
+               )}
           </div>
       </nav>
-      <main className="max-w-7xl mx-auto px-4 py-8">
-        {activeTab === Tab.INPUT && <StoryInput onAnalyze={handleAnalyzeStory} status={status} selectedVoice={selectedVoice} onVoiceChange={setSelectedVoice} />}
-        {activeTab === Tab.ASSETS && storyData && <AssetGallery characters={storyData.characters} settings={storyData.settings} onGenerateCharacter={handleGenerateCharacter} onGenerateSetting={handleGenerateSetting} />}
-        {activeTab === Tab.STORYBOARD && storyData && <Storyboard 
-            segments={storyData.segments} 
-            onGenerateScene={handleGenerateScene} 
-            onGenerateVideo={(id, idx) => alert("Video generation coming soon")}
-            onPlayAudio={handleGenerateAndPlayAudio} 
-            onStopAudio={handleStopAudio} 
-            onSelectOption={handleSelectOption} 
-            onDeleteAudio={handleDeleteAudio}
-            onRegeneratePrompts={handleRegeneratePrompts}
-        />}
+
+      <main className="flex-1 max-w-[1600px] w-full mx-auto px-4 py-8">
+        {error && (
+              <div className="mb-8 p-4 bg-red-500/10 border border-red-500/50 rounded-xl flex items-start gap-4 text-red-200">
+                <AlertTriangle className="w-6 h-6 shrink-0" />
+                <div><h3 className="font-bold text-red-400">Error</h3><p className="text-sm">{error}</p></div>
+              </div>
+        )}
+
+        {currentView === View.FRONTEND && (
+            <div className="max-w-4xl mx-auto space-y-12 animate-fade-in">
+                <div className="bg-slate-800 rounded-2xl p-8 border border-slate-700 shadow-2xl relative overflow-hidden">
+                    <div className="absolute top-0 right-0 p-8 opacity-10 pointer-events-none"><Languages className="w-64 h-64 text-indigo-500" /></div>
+                    <h1 className="text-3xl font-black text-white mb-2">Configure Your Reader</h1>
+                    <p className="text-slate-400 mb-8 max-w-lg">Select target language. Lingotoons will translate narrative and enable interactive learning.</p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 relative z-10">
+                        <div className="space-y-2">
+                             <div className="flex justify-between items-center">
+                                 <label className="text-xs font-bold text-indigo-300 uppercase tracking-wider">Target Language</label>
+                                 {storyData && storyData.completedTranslations?.[learningLanguage] && (
+                                     <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded font-bold border border-emerald-500/30 flex items-center gap-1">
+                                         <CheckCircle className="w-3 h-3" /> Ready
+                                     </span>
+                                 )}
+                             </div>
+                             <select value={learningLanguage} onChange={(e) => setLearningLanguage(e.target.value)} className="w-full bg-slate-900 border border-indigo-500/30 rounded-xl px-4 py-4 text-lg font-bold text-white outline-none appearance-none">
+                                 {LANGUAGES.map(lang => (<option key={lang.code} value={lang.code}>{lang.label}</option>))}
+                             </select>
+                        </div>
+                        <div className="space-y-2">
+                             <label className="text-xs font-bold text-emerald-300 uppercase tracking-wider">Native Language</label>
+                             <select value={nativeLanguage} onChange={(e) => setNativeLanguage(e.target.value)} className="w-full bg-slate-900 border border-emerald-500/30 rounded-xl px-4 py-4 text-lg font-bold text-white outline-none appearance-none">
+                                 {LANGUAGES.map(lang => (<option key={lang.code} value={lang.code}>{lang.label}</option>))}
+                             </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="space-y-6">
+                    <h2 className="text-xl font-bold text-white flex items-center gap-2"><BookOpen className="w-5 h-5 text-indigo-400" />Available Stories</h2>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        {storyData && (
+                             <button onClick={handleOpenReader} disabled={isTranslating} className="aspect-[3/4] bg-slate-900 rounded-xl border border-slate-700 overflow-hidden relative group cursor-pointer text-left w-full hover:border-indigo-500 transition-all">
+                                 <div className="absolute inset-0 bg-gradient-to-t from-black/90 to-transparent z-10" />
+                                 {storyData.cover?.imageUrl ? (<img src={storyData.cover.imageUrl} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />) : (<div className="w-full h-full bg-indigo-900/20" />)}
+                                 <div className="absolute bottom-0 left-0 right-0 p-6 z-20">
+                                     <span className="text-[10px] bg-indigo-600 text-white px-2 py-0.5 rounded font-bold uppercase mb-2 inline-block">Draft</span>
+                                     <h3 className="font-bold text-white text-lg mb-1 truncate">{storyData.title || "Untitled"}</h3>
+                                     <p className="text-xs text-slate-400 line-clamp-2">{storyData.segments[0]?.text}</p>
+                                     <div className="mt-4 flex items-center gap-2 text-indigo-400 text-xs font-bold uppercase group-hover:text-white">{isTranslating ? 'Translating...' : 'Read Now'} <ChevronRight className="w-3 h-3" /></div>
+                                 </div>
+                             </button>
+                        )}
+                        <div className="aspect-[3/4] bg-slate-800 rounded-xl border border-slate-700/50 flex flex-col items-center justify-center p-6 text-center opacity-50 grayscale hover:grayscale-0"><Book className="w-12 h-12 text-slate-600 mb-4" /><h3 className="font-bold text-slate-400">The Neon Samurai</h3></div>
+                        <div className="aspect-[3/4] bg-slate-800 rounded-xl border border-slate-700/50 flex flex-col items-center justify-center p-6 text-center opacity-50 grayscale hover:grayscale-0"><Book className="w-12 h-12 text-slate-600 mb-4" /><h3 className="font-bold text-slate-400">Cyber Cafe Romance</h3></div>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {currentView === View.STUDIO && (
+            <>
+                {activeTab === Tab.INPUT && <StoryInput onAnalyze={handleAnalyzeStory} status={status} selectedVoice={selectedVoice} onVoiceChange={setSelectedVoice} />}
+                {activeTab === Tab.ASSETS && storyData && <AssetGallery characters={storyData.characters} settings={storyData.settings} cover={storyData.cover} onGenerateCharacter={handleGenerateCharacter} onGenerateSetting={handleGenerateSetting} onGenerateCover={handleGenerateCover} onUploadAsset={handleUploadAsset} />}
+                {activeTab === Tab.STORYBOARD && storyData && <Storyboard segments={storyData.segments} settings={storyData.settings} onGenerateScene={handleGenerateScene} onGenerateVideo={(id, idx) => addToast("Video Gen coming soon", "info")} onSelectOption={handleSelectOption} onPlayAudio={handleGenerateAndPlayAudio} onStopAudio={handleStopAudio} onDeleteAudio={handleDeleteAudio} onRegeneratePrompts={handleRegeneratePrompts} onRegenerateSinglePanel={handleRegenerateSinglePanel} />}
+            </>
+        )}
+
+        {showReader && readerData && (
+             <SlideshowPlayer segments={readerData.segments} onClose={() => setShowReader(false)} onPlayAudio={handleGenerateAndPlayAudio} onStopAudio={handleStopAudio} nativeLanguage={nativeLanguage} learningLanguage={readerData.learningLanguage} vocabulary={storyData.vocabulary} />
+        )}
       </main>
     </div>
   );

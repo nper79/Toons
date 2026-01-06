@@ -1,6 +1,5 @@
-
 import React, { useState, useEffect, useRef } from 'react';
-import { Layout, Clapperboard, Layers, ChevronRight, Key, ExternalLink, Download, Upload, XCircle, CheckCircle, Info, AlertTriangle, Users, BookOpen, PenTool, Languages, Home as HomeIcon, Plus, Palette, Book, Globe, Library, FileText, Image as ImageIcon } from 'lucide-react';
+import { Layout, Clapperboard, Layers, ChevronRight, Key, ExternalLink, Download, Upload, XCircle, CheckCircle, Info, AlertTriangle, Users, BookOpen, PenTool, Languages, Home as HomeIcon, Plus, Palette, Book, Globe, Library, FileText, Image as ImageIcon, Zap } from 'lucide-react';
 import StoryInput from './components/StoryInput';
 import AssetGallery from './components/AssetGallery';
 import Storyboard from './components/Storyboard';
@@ -130,6 +129,12 @@ export default function App() {
       setError("Analysis failed. Try shortening the text.");
       addToast("Analysis failed.", "error");
     }
+  };
+
+  const handleReAnalyze = async () => {
+      if (!storyData) return;
+      const fullText = storyData.segments.map(s => s.text).join('\n\n');
+      await handleAnalyzeStory(fullText, storyData.artStyle);
   };
 
   const handleCreateNewStory = () => {
@@ -855,6 +860,15 @@ export default function App() {
                      
                      {storyData && (
                         <>
+                            <button 
+                                onClick={handleReAnalyze}
+                                className="p-2 md:px-3 md:py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 border border-amber-500/50 rounded flex items-center gap-2 transition-all shadow-[0_0_15px_rgba(245,158,11,0.1)]" 
+                                title="Repair / Re-Analyze Imported Story"
+                            >
+                                <Zap className="w-4 h-4 fill-current" /> 
+                                <span className="hidden md:inline text-xs font-bold">Re-Analyze</span>
+                            </button>
+
                             <div className="flex bg-slate-800 rounded border border-slate-700 items-center">
                                 <button 
                                     onClick={handleBatchTranslate}
