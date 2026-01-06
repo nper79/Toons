@@ -540,7 +540,13 @@ export default function App() {
              return `Panel ${idx+1} [ESTABLISHING SHOT]: ${p.visualPrompt}. SUBJECT DETAILS: ${characterInjection}. Wide angle. SHOW FULL ARCHITECTURE. ${generalSettingPrompt}. LIGHTING: Bright, well-lit scene. Ensure ${characterInjection} is clearly visible and NOT in silhouette.`;
          } else {
              // For all other shot types (ACTION, CHARACTER, DETAIL), we use the isolation technique to prevent room hallucinations
-             return `Panel ${idx+1} [${p.shotType || 'ACTION'} SHOT]: ${p.visualPrompt}. SUBJECT DETAILS: ${characterInjection}. CRITICAL RULE: Focus ONLY on the Subject. - Background MUST BE: Abstract Blur / Bokeh / Dark Void / Speed Lines. - Color Palette: ${settingColors}. - NO furniture, NO windows, NO doors. - COSTUME: Match the description "${characterInjection}" exactly.`;
+             // We aggressively push for 'Ethereal Bokeh' as requested to hide the background
+             return `Panel ${idx+1} [ISOLATION SHOT]: ${p.visualPrompt}. 
+             SUBJECT FOCUS: ${characterInjection}. 
+             BACKGROUND STRATEGY: Heavy Depth of Field, Ethereal Bokeh, Soft Out-of-focus Orbs, or Speed Lines.
+             CRITICAL: DO NOT draw distinct architectural details (walls/tiles) to avoid perspective errors. 
+             ATMOSPHERE COLOR: ${settingColors}.
+             COSTUME: Match the description "${characterInjection}" exactly.`;
          }
       }) : [];
       

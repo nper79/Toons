@@ -457,10 +457,12 @@ export const generateImage = async (
   **VISUAL HIERARCHY OF TRUTH (CRITICAL)**:
   1. **CONTINUITY REFERENCE**: If a 'CONTINUITY IMAGE' is provided, it represents the PREVIOUS SECOND in time. You MUST match the character's CURRENT STATE (Clothing, Nudity, Wounds, Dirt) from this image exactly.
      - Example: If the Continuity Image shows the character Naked in a bathtub, DRAW THEM NAKED (Tastefully), even if the 'Character Sheet' shows them in a suit.
-     - The 'Character Sheet' is ONLY for facial features and hair style.
-     - The 'Continuity Image' is for current clothing/state.
   
-  2. **PROMPT CONTEXT**: If the prompt says "bathing", "showering", or "sleeping", ignore the default outfit in the Character Sheet.
+  **ENVIRONMENTAL CONSISTENCY STRATEGY**:
+  - The model (you) often hallucinates room details (windows moving, tiles changing).
+  - **SOLUTION**: If the prompt asks for "Bokeh", "Blur", or "Abstract", you MUST HIDE the room.
+  - Draw the character clearly, but turn the background into soft, out-of-focus light blobs (Ethereal Bokeh) matching the room's color palette.
+  - **DO NOT** try to redraw complex tiles or furniture in Close-Up shots. It will fail. Use Blur instead.
   
   **CRITICAL: NO TEXT & NO ASIAN CHARACTERS**
   1. Do NOT generate speech bubbles, sound effects (SFX), or labels.
