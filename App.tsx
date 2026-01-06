@@ -614,7 +614,7 @@ export default function App() {
       }
   };
 
-  const handleGenerateScene = async (segmentId: string, options: { aspectRatio: AspectRatio, imageSize: ImageSize, referenceViewUrl?: string, continuitySegmentId?: string }) => {
+  const handleGenerateScene = async (segmentId: string, options: { aspectRatio: AspectRatio, imageSize: ImageSize, referenceViewUrl?: string, continuitySegmentId?: string, locationContinuityUrls?: string[] }) => {
     if (!storyData) return;
     setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, isGenerating: true } : s) }) : null);
     try {
@@ -632,7 +632,16 @@ export default function App() {
       
       // 1. ADD CONTINUITY IMAGE (Manual Override OR Default N-1)
       let continuityImage: string | undefined = undefined;
+      let locationContinuityImages: string[] = []; // NEW ARRAY
       
+      // A. Location Continuity (Multi-select)
+      if (options.locationContinuityUrls && options.locationContinuityUrls.length > 0) {
+          locationContinuityImages = options.locationContinuityUrls;
+      } else if (options.referenceViewUrl) {
+           refImages.push(options.referenceViewUrl);
+      }
+
+      // B. Action Continuity
       if (options.continuitySegmentId) {
           // Manual Override
           const continuitySeg = storyData.segments.find(s => s.id === options.continuitySegmentId);
@@ -668,6 +677,9 @@ export default function App() {
       }) : [];
       if (setting && setting.imageUrl) refImages.push(setting.imageUrl);
       
+      // Handle Authorized View Option (If not using Location Continuity History)
+      // Done above in block A logic
+
       // CALL API
       const masterGridUrl = await GeminiService.generateImage(
           `Story Segment: ${segment.text} ${charPrompt}`, 
@@ -678,7 +690,8 @@ export default function App() {
           storyData.cinematicDNA, 
           true, 
           gridVariations,
-          continuityImage // Pass the specific continuity image here
+          continuityImage, // Pass the specific continuity image here (Action)
+          locationContinuityImages // Pass the ARRAY of location images here (Environment)
       );
       
       const croppedImages = await Promise.all([0,1,2,3].map(i => cropGridCell(masterGridUrl, i)));

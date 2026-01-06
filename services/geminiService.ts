@@ -493,9 +493,10 @@ export const analyzeStoryText = async (storyText: string, artStyle: string): Pro
   - If the text implies bathing, sleeping, or changing, you MUST set 'costumeOverride' to describe that specific state (e.g., "Naked, bare shoulders, wet skin").
   - This overrides their default character sheet.
   
-  **DYNAMIC CINEMATOGRAPHY**: 
-  - Do NOT follow a rigid "Wide -> Close -> Close" formula.
-  - Choose shots that serve the story. Panel 1 does NOT have to be an Establishing shot.
+  **DYNAMIC CINEMATOGRAPHY (Background Strategy)**: 
+  - **Panel 1 (ESTABLISHING)**: MUST show the full room/environment clearly.
+  - **Panels 2, 3, 4 (CHARACTER/DETAIL)**: SHOULD focus on emotions/action. 
+  - **INSTRUCTION**: For Panels 2, 3, and 4, the 'visualPrompt' should explicitly ask for "White background", "Blurred background", "Speed lines", or "Abstract color wash" instead of detailed furniture.
   
   **CHUNK RULE**: VERBATIM segments of 3-4 sentences.
   `;
@@ -523,7 +524,8 @@ export const generateImage = async (
   cinematicDNA?: any,
   useGridMode: boolean = false,
   gridVariations?: string[],
-  continuityImage?: string // NEW: Special argument for the previous panel
+  continuityImage?: string, // Action Continuity
+  locationContinuityImages?: string[] // UPDATED: Location/Architectural Continuity (Array)
 ): Promise<string> => {
   const ai = getAi();
   
@@ -537,13 +539,19 @@ export const generateImage = async (
      - The Reference Images are for **FACIAL FEATURES & HAIR ONLY**.
      - Do NOT simply copy the shirt from the reference image if the text says "Naked".
   
-  2. **CONTINUITY REFERENCE**: If a 'CONTINUITY IMAGE' is provided, matches the character's state from that image.
+  2. **LOCATION CONTINUITY**: If 'LOCATION REFERENCES' are provided, they are the Absolute Truth for the room.
+     - You MUST use the exact same walls, floor, lighting, and furniture from those images.
+     - Do NOT hallucinate a new room. Combine the visual information from the references to build the environment.
   
-  **ENVIRONMENTAL CONSISTENCY STRATEGY**:
-  - The model (you) often hallucinates room details (windows moving, tiles changing).
-  - **SOLUTION**: If the prompt asks for "Bokeh", "Blur", or "Abstract", you MUST HIDE the room.
-  - Draw the character clearly, but turn the background into soft, out-of-focus light blobs (Ethereal Bokeh) matching the room's color palette.
-  - **DO NOT** try to redraw complex tiles or furniture in Close-Up shots. It will fail. Use Blur instead.
+  3. **ACTION CONTINUITY**: If a 'SCENE CONTINUITY' image is provided, match the character's clothing state from it (unless overruled by Rule 1).
+  
+  **ENVIRONMENTAL CONSISTENCY STRATEGY (BACKGROUND HIDING)**:
+  - **PROBLEM**: Generating detailed rooms in every panel causes "hallucinations" (walls moving, doors changing).
+  - **SOLUTION**: You must strictly obey "NO BACKGROUND" or "WHITE BACKGROUND" instructions in the prompt.
+  - **IF prompt says "White background"**: Draw the character on PURE WHITE or pure solid color. Do NOT draw walls or furniture.
+  - **IF prompt says "Bokeh"**: Blur the background into unrecognizable abstract blobs.
+  - **IF prompt says "Abstract"**: Use screen tones, speed lines, or soft gradients.
+  - **ONLY** draw the detailed room if the prompt explicitly says "ESTABLISHING SHOT" or "SHOW FULL ROOM".
   
   **CRITICAL: NO TEXT & NO ASIAN CHARACTERS**
   1. Do NOT generate speech bubbles, sound effects (SFX), or labels.
@@ -555,14 +563,23 @@ export const generateImage = async (
   // Construct the prompt content
   let promptParts: any[] = [];
 
-  // 1. Add Continuity Image First (Priority)
+  // 1. Add Location Continuity (Environment Architecture) - UPDATED FOR MULTIPLE IMAGES
+  if (locationContinuityImages && locationContinuityImages.length > 0) {
+      promptParts.push({ text: "**LOCATION REFERENCE (ARCHITECTURAL TRUTH)**: The following images define the specific room/background. Combine these views to create the environment. Copy walls, floor, lighting, and furniture style EXACTLY." });
+      locationContinuityImages.forEach(img => {
+          const base64Data = img.includes(',') ? img.split(',')[1] : img;
+          promptParts.push({ inlineData: { mimeType: 'image/png', data: base64Data } });
+      });
+  }
+
+  // 2. Add Continuity Image (Action/Clothing state)
   if (continuityImage) {
       const base64Data = continuityImage.includes(',') ? continuityImage.split(',')[1] : continuityImage;
-      promptParts.push({ text: "**SCENE CONTINUITY REFERENCE (HIGHEST PRIORITY)**: This is the immediately preceding moment. Match the clothing/state shown here exactly." });
+      promptParts.push({ text: "**SCENE ACTION CONTINUITY**: This is the immediately preceding moment. Match the clothing/state shown here exactly." });
       promptParts.push({ inlineData: { mimeType: 'image/png', data: base64Data } });
   }
 
-  // 2. Add Character/Setting Refs
+  // 3. Add Character/Setting Refs
   if (refImages && refImages.length > 0) {
     promptParts.push({ text: "**IDENTITY REFERENCE (FACE/HAIR ONLY)**: Use these for facial features. IGNORE CLOTHING if prompt specifies otherwise." });
     refImages.forEach(b64 => {
@@ -571,7 +588,7 @@ export const generateImage = async (
     });
   }
 
-  // 3. Add Prompt
+  // 4. Add Prompt
   if (useGridMode && gridVariations && gridVariations.length >= 4) {
     // REPLICATING THE PROVEN PROMPT STRUCTURE:
     const gridPrompt = `2x2 image: Top left image: ${gridVariations[0]} Top right image: ${gridVariations[1]} Bottom left image: ${gridVariations[2]} Bottom right image: ${gridVariations[3]}`;

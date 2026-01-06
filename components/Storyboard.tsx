@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useMemo, useEffect } from 'react';
-import { Clapperboard, Play, Volume2, Grid, Camera, Loader2, Trash2, Film, Check, RefreshCw, X, Maximize2, MoreHorizontal, Download, Eye, FileText, MicOff, GitBranch, GitMerge, ChevronDown, Sparkles, Map, History, Wand2, CornerDownLeft } from 'lucide-react';
+import { Clapperboard, Play, Volume2, Grid, Camera, Loader2, Trash2, Film, Check, RefreshCw, X, Maximize2, MoreHorizontal, Download, Eye, FileText, MicOff, GitBranch, GitMerge, ChevronDown, Sparkles, Map, History, Wand2, CornerDownLeft, MapPin, MousePointerClick, PlusCircle } from 'lucide-react';
 import { StorySegment, AspectRatio, ImageSize, SegmentType, Setting } from '../types';
 import SlideshowPlayer from './SlideshowPlayer';
 // @ts-ignore
@@ -10,7 +10,7 @@ import { createPortal } from 'react-dom';
 interface StoryboardProps {
   segments: StorySegment[];
   settings?: Setting[]; // Added settings prop to access authorized views
-  onGenerateScene: (segmentId: string, options: { aspectRatio: AspectRatio, imageSize: ImageSize, referenceViewUrl?: string, continuitySegmentId?: string }) => void;
+  onGenerateScene: (segmentId: string, options: { aspectRatio: AspectRatio, imageSize: ImageSize, referenceViewUrl?: string, continuitySegmentId?: string, locationContinuityUrls?: string[] }) => void;
   onGenerateVideo: (segmentId: string, imageIndex: number) => void;
   onPlayAudio: (segmentId: string, text: string) => Promise<void>;
   onStopAudio: () => void;
@@ -37,10 +37,15 @@ const Storyboard: React.FC<StoryboardProps> = ({
   const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
   const [generatingAudioId, setGeneratingAudioId] = useState<string | null>(null);
   
-  // State for reference view selection in editor
-  const [selectedReferenceView, setSelectedReferenceView] = useState<string>('');
-  // State for Continuity Override
+  // State for Continuity Override (Action/Character)
   const [selectedContinuitySegmentId, setSelectedContinuitySegmentId] = useState<string>('');
+  
+  // NEW: State for Multi-Select Location Stack
+  // Stores URLs of images selected as environmental truth
+  const [activeEnvironmentRefs, setActiveEnvironmentRefs] = useState<{url: string, label: string, type: 'asset' | 'history'}[]>([]);
+  
+  // Temporary state for the "Scene History" dropdown selector
+  const [historySelectorSceneId, setHistorySelectorSceneId] = useState<string>('');
 
   // NEW: State for Single Panel Correction
   const [selectedPanelIndex, setSelectedPanelIndex] = useState<number | null>(null);
@@ -55,6 +60,9 @@ const Storyboard: React.FC<StoryboardProps> = ({
           setSelectedPanelIndex(null);
           setCorrectionPrompt('');
           setIsRegeneratingPanel(false);
+          setSelectedContinuitySegmentId('');
+          setHistorySelectorSceneId('');
+          setActiveEnvironmentRefs([]);
       }
   }, [editingSegmentId]);
 
@@ -98,14 +106,22 @@ const Storyboard: React.FC<StoryboardProps> = ({
       setIsRegeneratingPanel(true);
       onRegenerateSinglePanel(editingSegmentId, selectedPanelIndex, correctionPrompt);
       
-      // We don't clear the prompt immediately so user can see what they typed, 
-      // but we will reset the loading state via effect or timeout if needed, 
-      // though ideally the parent component update will trigger a re-render.
       setTimeout(() => {
           setIsRegeneratingPanel(false);
           setCorrectionPrompt('');
-          setSelectedPanelIndex(null); // Deselect after submission
-      }, 3000); // Artificial delay for UI feedback if API is fast, normally API takes longer
+          setSelectedPanelIndex(null); 
+      }, 3000); 
+  };
+
+  const handleAddEnvironmentRef = (url: string, label: string, type: 'asset' | 'history') => {
+      if (!url) return;
+      // Prevent duplicates
+      if (activeEnvironmentRefs.some(ref => ref.url === url)) return;
+      setActiveEnvironmentRefs(prev => [...prev, { url, label, type }]);
+  };
+
+  const handleRemoveEnvironmentRef = (url: string) => {
+      setActiveEnvironmentRefs(prev => prev.filter(ref => ref.url !== url));
   };
 
   const editingSegment = segments.find(s => s.id === editingSegmentId);
@@ -120,6 +136,22 @@ const Storyboard: React.FC<StoryboardProps> = ({
         .filter(s => s.masterGridImageUrl)
         .reverse(); // Show newest first
   }, [editingSegment, segments]);
+
+  // Get images for the currently selected history scene (for browsing)
+  const historySelectorImages = useMemo(() => {
+      if (!historySelectorSceneId) return [];
+      const seg = segments.find(s => s.id === historySelectorSceneId);
+      if (!seg) return [];
+
+      const images = [];
+      if (seg.masterGridImageUrl) images.push({ url: seg.masterGridImageUrl, label: 'Master Grid' });
+      if (seg.generatedImageUrls) {
+          seg.generatedImageUrls.forEach((url, idx) => {
+             images.push({ url, label: `Panel ${idx + 1}` });
+          });
+      }
+      return images;
+  }, [historySelectorSceneId, segments]);
 
   const handleAudioClick = async (id: string, text: string) => {
     setGeneratingAudioId(id);
@@ -316,8 +348,8 @@ const Storyboard: React.FC<StoryboardProps> = ({
                                                     onGenerateScene(editingSegment.id, { 
                                                         aspectRatio: AspectRatio.MOBILE, 
                                                         imageSize: ImageSize.K1,
-                                                        referenceViewUrl: selectedReferenceView || undefined,
-                                                        continuitySegmentId: selectedContinuitySegmentId || undefined
+                                                        continuitySegmentId: selectedContinuitySegmentId || undefined,
+                                                        locationContinuityUrls: activeEnvironmentRefs.map(r => r.url) // Pass multiple refs
                                                     });
                                                 }}
                                                 className="text-[10px] bg-slate-700 hover:bg-indigo-600 text-white px-3 py-1.5 rounded-full font-bold flex items-center gap-1 transition-colors shadow-sm border border-slate-600 hover:border-indigo-500"
@@ -383,8 +415,8 @@ const Storyboard: React.FC<StoryboardProps> = ({
                                                 onClick={() => onGenerateScene(editingSegment.id, { 
                                                     aspectRatio: AspectRatio.MOBILE, 
                                                     imageSize: ImageSize.K1,
-                                                    referenceViewUrl: selectedReferenceView || undefined,
-                                                    continuitySegmentId: selectedContinuitySegmentId || undefined
+                                                    continuitySegmentId: selectedContinuitySegmentId || undefined,
+                                                    locationContinuityUrls: activeEnvironmentRefs.map(r => r.url)
                                                 })}
                                                 disabled={editingSegment.isGenerating}
                                                 className="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2 rounded-lg font-bold text-sm transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -447,30 +479,120 @@ const Storyboard: React.FC<StoryboardProps> = ({
                                     Composition Control
                                 </h4>
                                 
-                                {/* 1. Background Reference */}
-                                {associatedSetting && associatedSetting.authorizedViews && associatedSetting.authorizedViews.length > 0 ? (
-                                    <div className="space-y-3">
-                                        <label className="text-xs text-slate-400 font-bold block">1. Environment Consistency (Background)</label>
-                                        <select 
-                                            value={selectedReferenceView}
-                                            onChange={(e) => setSelectedReferenceView(e.target.value)}
-                                            className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-sm text-white focus:ring-2 focus:ring-emerald-500 outline-none"
-                                        >
-                                            <option value="">Auto (Creative Freedom)</option>
-                                            {associatedSetting.authorizedViews.map(view => (
-                                                <option key={view.id} value={view.imageUrl}>
-                                                    Force View: {view.name}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
-                                ) : (
-                                    <p className="text-xs text-slate-500 italic">
-                                        No Master Asset Views generated for this setting yet.
-                                    </p>
-                                )}
+                                {/* 1. Background Reference - NOW MULTI-SELECT STACK */}
+                                <div className="space-y-3">
+                                    <label className="text-xs text-slate-400 font-bold block flex items-center gap-2">
+                                        1. Environment Consistency (Background)
+                                        <span className="text-[9px] bg-emerald-500/20 text-emerald-300 px-1.5 rounded uppercase">Location Truth</span>
+                                    </label>
 
-                                {/* 2. NEW: Continuity Override (Character/Outfit) */}
+                                    {/* Active References Visualization */}
+                                    <div className="min-h-[60px] bg-slate-900 border border-slate-700 rounded-lg p-2 flex gap-2 overflow-x-auto custom-scrollbar">
+                                        {activeEnvironmentRefs.length === 0 ? (
+                                            <div className="w-full flex items-center justify-center text-[10px] text-slate-600 italic">
+                                                No reference images selected. AI will hallucinate room.
+                                            </div>
+                                        ) : (
+                                            activeEnvironmentRefs.map((ref, idx) => (
+                                                <div key={idx} className="relative shrink-0 w-14 h-14 rounded-md overflow-hidden border border-emerald-500/30 group">
+                                                    <img src={ref.url} className="w-full h-full object-cover opacity-80" />
+                                                    <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                                                        <button 
+                                                            onClick={() => handleRemoveEnvironmentRef(ref.url)}
+                                                            className="bg-red-500/80 p-1 rounded-full text-white"
+                                                        >
+                                                            <X className="w-3 h-3" />
+                                                        </button>
+                                                    </div>
+                                                    <span className="absolute bottom-0 inset-x-0 bg-black/60 text-[6px] text-white text-center truncate px-1">{ref.label}</span>
+                                                </div>
+                                            ))
+                                        )}
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-2">
+                                        {/* Adder A: Authorized Views (Assets) */}
+                                        <div>
+                                            <select 
+                                                onChange={(e) => {
+                                                    const view = associatedSetting?.authorizedViews?.find(v => v.imageUrl === e.target.value);
+                                                    if(view) handleAddEnvironmentRef(view.imageUrl, view.name, 'asset');
+                                                    e.target.value = ""; // Reset
+                                                }}
+                                                className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-white focus:ring-2 focus:ring-emerald-500 outline-none"
+                                            >
+                                                <option value="">+ Add Asset View</option>
+                                                {associatedSetting && associatedSetting.authorizedViews && associatedSetting.authorizedViews.map(view => (
+                                                    <option key={view.id} value={view.imageUrl}>
+                                                        Asset: {view.name}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </div>
+
+                                        {/* Adder B: Location History (Scene X) */}
+                                        <div>
+                                             <select 
+                                                value={historySelectorSceneId}
+                                                onChange={(e) => setHistorySelectorSceneId(e.target.value)}
+                                                className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-white focus:ring-2 focus:ring-emerald-500 outline-none"
+                                            >
+                                                <option value="">Browse History...</option>
+                                                {previousSegmentsWithImages.map((seg, idx) => (
+                                                    <option key={seg.id} value={seg.id}>
+                                                         Scene {segments.findIndex(s => s.id === seg.id) + 1}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    </div>
+                                    
+                                    {/* Sub-Selector for History Images */}
+                                    {historySelectorSceneId && historySelectorImages.length > 0 && (
+                                        <div className="mt-2 animate-in fade-in slide-in-from-top-2 p-2 bg-slate-800/50 rounded-lg border border-slate-700">
+                                            <div className="flex justify-between items-center mb-2">
+                                                <label className="text-[9px] text-slate-400 font-bold uppercase tracking-wider flex items-center gap-1">
+                                                    <MousePointerClick className="w-3 h-3" /> Pick Reference from Scene {segments.findIndex(s => s.id === historySelectorSceneId) + 1}
+                                                </label>
+                                                <button onClick={() => setHistorySelectorSceneId('')}><X className="w-3 h-3 text-slate-500 hover:text-white"/></button>
+                                            </div>
+                                            <div className="grid grid-cols-5 gap-2">
+                                                {historySelectorImages.map((img, idx) => {
+                                                    const isAdded = activeEnvironmentRefs.some(ref => ref.url === img.url);
+                                                    return (
+                                                        <div 
+                                                            key={idx}
+                                                            onClick={() => handleAddEnvironmentRef(img.url, `Sc${segments.findIndex(s => s.id === historySelectorSceneId) + 1}-${img.label}`, 'history')}
+                                                            className={`relative aspect-square rounded overflow-hidden cursor-pointer border transition-all group
+                                                                ${isAdded 
+                                                                    ? 'border-emerald-500 opacity-50 cursor-default' 
+                                                                    : 'border-slate-600 hover:border-emerald-400'
+                                                                }`}
+                                                        >
+                                                            <img src={img.url} className="w-full h-full object-cover" />
+                                                            {!isAdded && (
+                                                                <div className="absolute inset-0 bg-emerald-500/20 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                                                                    <PlusCircle className="w-4 h-4 text-white" />
+                                                                </div>
+                                                            )}
+                                                            {isAdded && (
+                                                                <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                                                                    <Check className="w-4 h-4 text-emerald-500" />
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    )}
+                                    
+                                    <p className="text-[10px] text-slate-500 leading-relaxed mt-1">
+                                        Add multiple reference images to help the AI understand the room's layout from different angles.
+                                    </p>
+                                </div>
+
+                                {/* 2. Continuity Override (Character/Outfit) */}
                                 <div className="space-y-3">
                                     <label className="text-xs text-slate-400 font-bold block flex items-center gap-2">
                                         2. Character Continuity (Outfit/Items)
