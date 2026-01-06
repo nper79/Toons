@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Layout, Clapperboard, Layers, ChevronRight, Key, ExternalLink, Download, Upload, XCircle, CheckCircle, Info, AlertTriangle, Users, BookOpen, PenTool, Languages, Home as HomeIcon, Plus, Palette, Book, Globe, Library } from 'lucide-react';
+import { Layout, Clapperboard, Layers, ChevronRight, Key, ExternalLink, Download, Upload, XCircle, CheckCircle, Info, AlertTriangle, Users, BookOpen, PenTool, Languages, Home as HomeIcon, Plus, Palette, Book, Globe, Library, FileText, Image as ImageIcon } from 'lucide-react';
 import StoryInput from './components/StoryInput';
 import AssetGallery from './components/AssetGallery';
 import Storyboard from './components/Storyboard';
@@ -586,6 +586,20 @@ export default function App() {
       }
   };
 
+  // NEW: Handler for Export Text
+  const handleExportText = () => {
+    if (storyData) {
+        StorageService.exportStoryText(storyData);
+    }
+  };
+
+  // NEW: Handler for Exporting Image Prompts
+  const handleExportPrompts = () => {
+     if (storyData) {
+         StorageService.exportImagePrompts(storyData);
+     }
+  };
+
   const handleStopAudio = () => GeminiService.stopAudio();
   const handleExport = async () => { if (storyData) await StorageService.exportProject(storyData); };
   const handleImportClick = () => fileInputRef.current?.click();
@@ -692,7 +706,17 @@ export default function App() {
                                 </button>
                             </div>
                             
-                            <button onClick={handleExport} className="p-2 md:px-3 md:py-1.5 bg-slate-800 rounded border border-slate-700 flex items-center gap-2 hover:bg-slate-700 transition-colors" title="Export Project">
+                            <button onClick={handleExportPrompts} className="p-2 md:px-3 md:py-1.5 bg-slate-800 rounded border border-slate-700 flex items-center gap-2 hover:bg-slate-700 transition-colors" title="Download Image Prompts Only">
+                                <ImageIcon className="w-4 h-4" /> 
+                                <span className="hidden md:inline text-xs font-bold">Export Prompts</span>
+                            </button>
+
+                            <button onClick={handleExportText} className="p-2 md:px-3 md:py-1.5 bg-slate-800 rounded border border-slate-700 flex items-center gap-2 hover:bg-slate-700 transition-colors" title="Download Text Only">
+                                <FileText className="w-4 h-4" /> 
+                                <span className="hidden md:inline text-xs font-bold">Export Text</span>
+                            </button>
+
+                            <button onClick={handleExport} className="p-2 md:px-3 md:py-1.5 bg-slate-800 rounded border border-slate-700 flex items-center gap-2 hover:bg-slate-700 transition-colors" title="Export Project (Full)">
                                 <Download className="w-4 h-4" /> 
                                 <span className="hidden md:inline text-xs font-bold">Export</span>
                             </button>

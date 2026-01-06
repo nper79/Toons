@@ -286,6 +286,10 @@ export const regeneratePanelPrompts = async (
     You are a Cinematographer and Art Director for a high-budget Manhwa.
     **TASK**: Rewrite visual prompts for the TARGET SEGMENT provided.
     
+    **CRITICAL: NO TEXT GENERATION**
+    - The visual prompts MUST NOT request text, sound effects, or speech bubbles.
+    - Focus strictly on visual composition, lighting, and action.
+    
     **CRITICAL STRATEGY: SPATIAL ISOLATION (Avoid Hallucinations)**
     AI generators hallucinate if you describe the room twice. You must hide the room after Panel 1.
     
@@ -451,7 +455,13 @@ export const generateImage = async (
   let styleInstruction = `Style: ${globalStyle || 'Manhwa/Webtoon'}. High-quality Korean Webtoon style. Cel-shaded, sharp lines.`;
   styleInstruction += " CONSISTENCY: Match the character and environment references exactly.";
 
-  const systemInstruction = `You are an expert concept artist. ${styleInstruction}. IMPORTANT: NO TEXT ON IMAGES. No speech bubbles, no labels.
+  const systemInstruction = `You are an expert concept artist. ${styleInstruction}.
+  
+  **CRITICAL: NO TEXT & NO ASIAN CHARACTERS**
+  1. Do NOT generate speech bubbles, sound effects (SFX), or labels.
+  2. STRICTLY FORBIDDEN: Korean Hangul, Japanese Kanji/Kana, Chinese Hanzi.
+  3. If environment text is absolutely unavoidable (e.g., a street sign), use ENGLISH only.
+  4. The output must be "Clean Art" (textless).
   
   **LIGHTING RULE**: Ensure the subject is well-lit. Avoid silhouettes unless explicitly requested.
   **CLOTHING RULE**: Characters must wear exactly what is described in the prompt. Do not change shoes or clothes between panels.

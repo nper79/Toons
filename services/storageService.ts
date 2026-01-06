@@ -12,6 +12,65 @@ const fetchBlobData = async (blobUrl: string): Promise<Blob> => {
   return await response.blob();
 };
 
+// NEW: Export just the image prompts
+export const exportImagePrompts = (storyData: StoryData) => {
+  let content = `VISUAL PROMPT SCRIPT\nTITLE: ${storyData.title}\nART STYLE: ${storyData.artStyle}\n`;
+  content += `NOTE: These prompts describe the visual composition for each panel (beat).\n`;
+  content += `=================================================================\n\n`;
+
+  storyData.segments.forEach((segment, sIndex) => {
+      content += `SECTION ${sIndex + 1}: ${segment.text.substring(0, 50)}...\n`;
+      content += `----------------------------------------\n`;
+      
+      if (segment.panels && segment.panels.length > 0) {
+          segment.panels.forEach((panel) => {
+              content += `[Panel ${panel.panelIndex + 1} | ${panel.shotType} | ${panel.cameraAngle}]\n`;
+              content += `PROMPT: ${panel.visualPrompt}\n`;
+              content += `CAPTION: "${panel.caption}"\n\n`;
+          });
+      } else {
+          content += `(No panels generated for this segment yet)\n\n`;
+      }
+      content += `\n`;
+  });
+
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  saveAs(blob, `${storyData.title.replace(/\s+/g, '_')}_prompts.txt`);
+};
+
+// NEW: Export just the text script
+export const exportStoryText = (storyData: StoryData) => {
+  const content = storyData.segments.map((s, i) => {
+      let section = `[Scene ${i + 1}]`;
+      
+      // Add location context if available
+      if (s.settingId) {
+          const settingName = storyData.settings.find(set => set.id === s.settingId)?.name;
+          section += ` [Location: ${settingName || 'Unknown'}]`;
+      }
+      
+      // Add characters present
+      if (s.characterIds && s.characterIds.length > 0) {
+           const charNames = s.characterIds.map(id => storyData.characters.find(c => c.id === id)?.name).filter(Boolean).join(', ');
+           section += ` [Characters: ${charNames}]`;
+      }
+
+      section += `\n${s.text}\n`;
+      
+      // Add choices if branch point
+      if (s.choices && s.choices.length > 0) {
+          s.choices.forEach(c => section += `   > Option: ${c.text}\n`);
+      }
+      
+      return section;
+  }).join('\n----------------------------------------\n');
+
+  const fullText = `TITLE: ${storyData.title}\nSTYLE: ${storyData.artStyle}\n\n========================================\n\n${content}`;
+  
+  const blob = new Blob([fullText], { type: "text/plain;charset=utf-8" });
+  saveAs(blob, `${storyData.title.replace(/\s+/g, '_')}_script.txt`);
+};
+
 export const exportProject = async (storyData: StoryData) => {
   const zip = new JSZip();
   const assetsFolder = zip.folder("assets");

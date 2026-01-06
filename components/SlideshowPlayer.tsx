@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Play, ChevronDown, Layout, CheckCircle, GitBranch, Volume2, VolumeX } from 'lucide-react';
+import { X, Play, ChevronDown, Layout, CheckCircle, GitBranch, Volume2, VolumeX, Loader2 } from 'lucide-react';
 import { StorySegment, WordDefinition } from '../types';
 import InteractiveText from './InteractiveText';
 
@@ -79,15 +79,6 @@ const SlideshowPlayer: React.FC<SlideshowPlayerProps> = ({
     if (panel) {
         setActiveSegmentId(panel.segmentId);
         setActiveBeatIndex(panel.beatIndex);
-
-        // Trigger Audio for new segments as they cross into the middle
-        if (panel.isFirstBeat && lastPlayedSegmentId.current !== panel.segmentId && !isMuted) {
-            lastPlayedSegmentId.current = panel.segmentId;
-            if (panel.segment.audioUrl && audioRef.current) {
-                audioRef.current.src = panel.segment.audioUrl;
-                audioRef.current.play().catch(e => console.warn("Audio autoplay blocked"));
-            }
-        }
     }
   };
 
@@ -210,7 +201,7 @@ const SlideshowPlayer: React.FC<SlideshowPlayerProps> = ({
           
           {/* Dynamic Floating Caption with INTERACTIVE TEXT */}
           {currentPanelData.caption && (
-              <div className="w-full max-w-sm bg-black/80 backdrop-blur-2xl border border-white/10 px-6 py-5 rounded-3xl shadow-[0_30px_60px_rgba(0,0,0,0.8)] animate-slide-up pointer-events-auto border-b-indigo-500/50">
+              <div className="w-full max-w-sm bg-black/80 backdrop-blur-2xl border border-white/10 px-6 py-5 rounded-3xl shadow-[0_30px_60px_rgba(0,0,0,0.8)] animate-slide-up pointer-events-auto border-b-indigo-500/50 flex flex-col gap-3">
                    <div className="text-lg md:text-xl font-serif text-white leading-relaxed text-center italic font-medium">
                         <InteractiveText 
                             text={currentPanelData.caption} 
@@ -220,8 +211,11 @@ const SlideshowPlayer: React.FC<SlideshowPlayerProps> = ({
                             vocabulary={vocabulary} // PASS CACHE
                         />
                    </div>
-                   <div className="text-[9px] text-center text-indigo-400 mt-2 uppercase tracking-widest font-sans opacity-50">
-                        Tap words for translation
+                   
+                   <div className="flex items-center justify-center border-t border-white/5 pt-3 mt-1">
+                       <span className="text-[9px] text-indigo-400 uppercase tracking-widest font-sans opacity-50">
+                            Tap words for definition
+                       </span>
                    </div>
               </div>
           )}
