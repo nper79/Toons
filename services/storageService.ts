@@ -2,6 +2,7 @@
 import JSZip from 'jszip';
 import saveAs from 'file-saver';
 import { StoryData, Character, Setting, StorySegment } from '../types';
+import { compressImage } from '../utils/imageUtils';
 
 // Helper to extract base64 data
 const getBase64Data = (dataUrl: string) => dataUrl.split(',')[1];
@@ -78,48 +79,54 @@ export const exportProject = async (storyData: StoryData) => {
   // Clone data to avoid mutating state
   const dataToSave = JSON.parse(JSON.stringify(storyData));
   
-  // Process Characters (Images are Data URIs - Sync)
-  dataToSave.characters.forEach((char: Character) => {
+  // Process Characters (Images are Data URIs - Async Compression)
+  for (const char of dataToSave.characters) {
     if (char.imageUrl && char.imageUrl.startsWith('data:')) {
-      const fileName = `char_${char.id}.png`;
-      assetsFolder?.file(fileName, getBase64Data(char.imageUrl), { base64: true });
+      // Force compression/conversion to JPEG (85% Quality)
+      const compressedUrl = await compressImage(char.imageUrl, 0.85);
+      const fileName = `char_${char.id}.jpg`;
+      assetsFolder?.file(fileName, getBase64Data(compressedUrl), { base64: true });
       char.imageUrl = `assets/${fileName}`;
     }
-  });
+  }
 
-  // Process Settings (Images are Data URIs - Sync)
-  dataToSave.settings.forEach((setting: Setting) => {
+  // Process Settings (Images are Data URIs - Async Compression)
+  for (const setting of dataToSave.settings) {
     if (setting.imageUrl && setting.imageUrl.startsWith('data:')) {
-      const fileName = `setting_${setting.id}.png`;
-      assetsFolder?.file(fileName, getBase64Data(setting.imageUrl), { base64: true });
+      const compressedUrl = await compressImage(setting.imageUrl, 0.85);
+      const fileName = `setting_${setting.id}.jpg`;
+      assetsFolder?.file(fileName, getBase64Data(compressedUrl), { base64: true });
       setting.imageUrl = `assets/${fileName}`;
     }
-  });
+  }
 
   // Process Cover Art
   if (dataToSave.cover?.imageUrl && dataToSave.cover.imageUrl.startsWith('data:')) {
-    const fileName = `cover_art.png`;
-    assetsFolder?.file(fileName, getBase64Data(dataToSave.cover.imageUrl), { base64: true });
+    const compressedUrl = await compressImage(dataToSave.cover.imageUrl, 0.85);
+    const fileName = `cover_art.jpg`;
+    assetsFolder?.file(fileName, getBase64Data(compressedUrl), { base64: true });
     dataToSave.cover.imageUrl = `assets/${fileName}`;
   }
 
-  // Process Segments (Async needed for Blob URLs)
-  // We use a regular for loop to handle async await
+  // Process Segments (Async needed for Blob URLs and Compression)
   for (const segment of dataToSave.segments) {
-    // 1. Images (Data URIs - Sync)
+    // 1. Images (Data URIs - Async Compression)
     if (segment.generatedImageUrls && Array.isArray(segment.generatedImageUrls)) {
-        segment.generatedImageUrls.forEach((url: string, index: number) => {
+        for (let i = 0; i < segment.generatedImageUrls.length; i++) {
+            const url = segment.generatedImageUrls[i];
             if (url && url.startsWith('data:')) {
-                const fileName = `segment_${segment.id}_img_${index}.png`;
-                assetsFolder?.file(fileName, getBase64Data(url), { base64: true });
-                segment.generatedImageUrls[index] = `assets/${fileName}`;
+                const compressedUrl = await compressImage(url, 0.85);
+                const fileName = `segment_${segment.id}_img_${i}.jpg`;
+                assetsFolder?.file(fileName, getBase64Data(compressedUrl), { base64: true });
+                segment.generatedImageUrls[i] = `assets/${fileName}`;
             }
-        });
+        }
     }
 
     if (segment.masterGridImageUrl && segment.masterGridImageUrl.startsWith('data:')) {
-      const fileName = `segment_${segment.id}_master_grid.png`;
-      assetsFolder?.file(fileName, getBase64Data(segment.masterGridImageUrl), { base64: true });
+      const compressedUrl = await compressImage(segment.masterGridImageUrl, 0.85);
+      const fileName = `segment_${segment.id}_master_grid.jpg`;
+      assetsFolder?.file(fileName, getBase64Data(compressedUrl), { base64: true });
       segment.masterGridImageUrl = `assets/${fileName}`;
     }
     
@@ -171,7 +178,10 @@ export const importProject = async (file: File): Promise<{ data: StoryData, warn
     const imgFile = zip.folder("assets")?.file(fileName);
     if (imgFile) {
       const base64 = await imgFile.async("base64");
-      return `data:image/png;base64,${base64}`;
+      // Detect mime type based on extension
+      const ext = fileName.split('.').pop()?.toLowerCase();
+      const mimeType = (ext === 'jpg' || ext === 'jpeg') ? 'image/jpeg' : 'image/png';
+      return `data:${mimeType};base64,${base64}`;
     }
     return undefined;
   };

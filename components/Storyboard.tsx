@@ -305,13 +305,35 @@ const Storyboard: React.FC<StoryboardProps> = ({
                         
                         <div className="space-y-6">
                             <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700/50">
-                                <h4 className="text-sm font-bold text-white mb-4 flex items-center gap-2 justify-between">
+                                <h4 className="text-sm font-bold text-white mb-4 flex items-center justify-between">
                                     <span className="flex items-center gap-2"><Grid className="w-4 h-4 text-indigo-400" /> Master Grid (Select to Edit)</span>
-                                    {selectedPanelIndex !== null && (
-                                        <span className="text-[10px] bg-indigo-500 text-white px-2 py-0.5 rounded animate-pulse">
-                                            Editing Panel #{selectedPanelIndex + 1}
-                                        </span>
-                                    )}
+                                    
+                                    <div className="flex items-center gap-2">
+                                        {editingSegment.masterGridImageUrl && !editingSegment.isGenerating && (
+                                            <button 
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    onGenerateScene(editingSegment.id, { 
+                                                        aspectRatio: AspectRatio.MOBILE, 
+                                                        imageSize: ImageSize.K1,
+                                                        referenceViewUrl: selectedReferenceView || undefined,
+                                                        continuitySegmentId: selectedContinuitySegmentId || undefined
+                                                    });
+                                                }}
+                                                className="text-[10px] bg-slate-700 hover:bg-indigo-600 text-white px-3 py-1.5 rounded-full font-bold flex items-center gap-1 transition-colors shadow-sm border border-slate-600 hover:border-indigo-500"
+                                                title="Regenerate Full Grid (All 4 Panels)"
+                                            >
+                                                <RefreshCw className="w-3 h-3" />
+                                                Regen All
+                                            </button>
+                                        )}
+
+                                        {selectedPanelIndex !== null && (
+                                            <span className="text-[10px] bg-indigo-500 text-white px-2 py-0.5 rounded animate-pulse">
+                                                Editing #{selectedPanelIndex + 1}
+                                            </span>
+                                        )}
+                                    </div>
                                 </h4>
                                 
                                 <div className="aspect-[9/16] bg-black rounded-lg overflow-hidden relative border border-slate-700 shadow-inner group">

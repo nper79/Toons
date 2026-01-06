@@ -1,6 +1,7 @@
 
 import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { StoryData, AspectRatio, ImageSize, ManhwaPanel, StorySegment, WordDefinition } from "../types";
+import { compressImage } from "../utils/imageUtils";
 
 const getAi = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
 
@@ -587,7 +588,9 @@ export const generateImage = async (
       });
       const data = response.candidates?.[0].content.parts.find((p: any) => p.inlineData)?.inlineData?.data;
       if (!data) throw new Error("No image data");
-      return `data:image/png;base64,${data}`;
+      // COMPRESSION STEP: Convert raw PNG to optimized JPEG
+      const rawBase64 = `data:image/png;base64,${data}`;
+      return await compressImage(rawBase64, 0.85);
   } catch (error: any) {
       const fallbackResponse = await ai.models.generateContent({
         model: MODEL_IMAGE_GEN_FALLBACK,
@@ -596,7 +599,9 @@ export const generateImage = async (
       });
       const data = fallbackResponse.candidates?.[0].content.parts.find((p: any) => p.inlineData)?.inlineData?.data;
       if (!data) throw new Error("Image gen failed");
-      return `data:image/png;base64,${data}`;
+      // COMPRESSION STEP
+      const rawBase64 = `data:image/png;base64,${data}`;
+      return await compressImage(rawBase64, 0.85);
   }
 };
 

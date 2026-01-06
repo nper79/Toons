@@ -7,7 +7,7 @@ import Storyboard from './components/Storyboard';
 import { StoryData, ProcessingStatus, AspectRatio, ImageSize, TranslationCache } from './types';
 import * as GeminiService from './services/geminiService';
 import * as StorageService from './services/storageService';
-import { cropGridCell } from './utils/imageUtils';
+import { cropGridCell, compressImage } from './utils/imageUtils';
 import SlideshowPlayer from './components/SlideshowPlayer';
 
 enum View {
@@ -363,21 +363,23 @@ export default function App() {
         return;
     }
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
         const result = e.target?.result as string;
         if (result) {
+            // Compress uploaded image before storing to save memory
+            const compressedResult = await compressImage(result, 0.85);
             setStoryData(prev => {
                 if (!prev) return null;
                 if (type === 'cover') {
-                    return { ...prev, cover: { imageUrl: result } };
+                    return { ...prev, cover: { imageUrl: compressedResult } };
                 }
                 if (type === 'character') {
-                    return { ...prev, characters: prev.characters.map(c => c.id === id ? { ...c, imageUrl: result } : c) };
+                    return { ...prev, characters: prev.characters.map(c => c.id === id ? { ...c, imageUrl: compressedResult } : c) };
                 } else {
-                    return { ...prev, settings: prev.settings.map(s => s.id === id ? { ...s, imageUrl: result } : s) };
+                    return { ...prev, settings: prev.settings.map(s => s.id === id ? { ...s, imageUrl: compressedResult } : s) };
                 }
             });
-            addToast("Asset uploaded successfully", "success");
+            addToast("Asset uploaded and optimized successfully", "success");
         }
     };
     reader.onerror = () => addToast("Failed to read file", "error");
