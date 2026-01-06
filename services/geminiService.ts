@@ -272,7 +272,7 @@ export const regeneratePanelPrompts = async (
                         visualPrompt: { type: Type.STRING, description: "EXTREMELY DETAILED visual description." },
                         caption: { type: Type.STRING },
                         cameraAngle: { type: Type.STRING },
-                        shotType: { type: Type.STRING, enum: ['ESTABLISHING', 'CHARACTER', 'ACTION', 'DETAIL'], description: "Panel 1 is usually ESTABLISHING. Others are CHARACTER/ACTION." }
+                        shotType: { type: Type.STRING, enum: ['ESTABLISHING', 'CHARACTER', 'ACTION', 'DETAIL'], description: "Choose the shot type that BEST fits the narrative beat." }
                     },
                     required: ["panelIndex", "visualPrompt", "caption", "cameraAngle", "shotType"]
                 },
@@ -290,17 +290,13 @@ export const regeneratePanelPrompts = async (
     - The visual prompts MUST NOT request text, sound effects, or speech bubbles.
     - Focus strictly on visual composition, lighting, and action.
     
-    **CRITICAL STRATEGY: SPATIAL ISOLATION (Avoid Hallucinations)**
-    AI generators hallucinate if you describe the room twice. You must hide the room after Panel 1.
-    
-    **PANEL 1 (ESTABLISHING)**: 
-    - Wide Shot. Show the layout, furniture, and setting clearly.
-    - **LIGHTING**: Ensure characters are WELL LIT (No accidental silhouettes unless requested).
-    
-    **PANEL 2, 3, 4 (ISOLATION)**:
-    - **FORBIDDEN**: Do NOT describe the room, walls, windows, or furniture positions.
-    - **FOCUS**: ZOOM IN on the specific subject (Face, Hand, Object, Shoe).
-    - **BACKGROUND**: Must be "Abstract Blur", "Speed Lines", or "Solid Color".
+    **DYNAMIC CINEMATOGRAPHY (NO FORMULAS)**
+    - Do NOT follow a rigid "Wide -> Close -> Close" formula.
+    - Choose the 'shotType' that best tells the story. 
+    - Panel 1 CAN be a Close-up if it's a mystery start. 
+    - Panel 4 CAN be a Wide Shot if it's a grand reveal.
+    - Use 'ESTABLISHING' when the reader needs to see the location/layout.
+    - Use 'ACTION' or 'CHARACTER' (Isolation) when focus is key.
     
     **COSTUME CONSISTENCY**:
     - If the character is wearing "Office Heels", NEVER describe "Sneakers" in an action shot.
@@ -419,9 +415,9 @@ export const analyzeStoryText = async (storyText: string, artStyle: string): Pro
   **CRITICAL RULE FOR CHARACTERS**:
   Define explicit clothing details (shoes, shirt, pants) in the description to ensure consistency.
   
-  **VISUAL PACING (ISOLATION RULE)**: 
-  - Panel 1: Establishing Shot (Show Room).
-  - Panel 2-4: ISOLATION SHOTS (Close-ups, Macro, Abstract Backgrounds).
+  **DYNAMIC CINEMATOGRAPHY (NO FORMULAS)**: 
+  - Do NOT follow a rigid "Wide -> Close -> Close" formula.
+  - Choose shots that serve the story. Panel 1 does NOT have to be an Establishing shot.
   
   **CHUNK RULE**: VERBATIM segments of 3-4 sentences.
   `;
@@ -448,7 +444,8 @@ export const generateImage = async (
   globalStyle?: string,
   cinematicDNA?: any,
   useGridMode: boolean = false,
-  gridVariations?: string[]
+  gridVariations?: string[],
+  continuityImage?: string // NEW: Special argument for the previous panel
 ): Promise<string> => {
   const ai = getAi();
   
@@ -457,49 +454,53 @@ export const generateImage = async (
 
   const systemInstruction = `You are an expert concept artist. ${styleInstruction}.
   
+  **VISUAL HIERARCHY OF TRUTH (CRITICAL)**:
+  1. **CONTINUITY REFERENCE**: If a 'CONTINUITY IMAGE' is provided, it represents the PREVIOUS SECOND in time. You MUST match the character's CURRENT STATE (Clothing, Nudity, Wounds, Dirt) from this image exactly.
+     - Example: If the Continuity Image shows the character Naked in a bathtub, DRAW THEM NAKED (Tastefully), even if the 'Character Sheet' shows them in a suit.
+     - The 'Character Sheet' is ONLY for facial features and hair style.
+     - The 'Continuity Image' is for current clothing/state.
+  
+  2. **PROMPT CONTEXT**: If the prompt says "bathing", "showering", or "sleeping", ignore the default outfit in the Character Sheet.
+  
   **CRITICAL: NO TEXT & NO ASIAN CHARACTERS**
   1. Do NOT generate speech bubbles, sound effects (SFX), or labels.
   2. STRICTLY FORBIDDEN: Korean Hangul, Japanese Kanji/Kana, Chinese Hanzi.
   3. If environment text is absolutely unavoidable (e.g., a street sign), use ENGLISH only.
   4. The output must be "Clean Art" (textless).
-  
-  **LIGHTING RULE**: Ensure the subject is well-lit. Avoid silhouettes unless explicitly requested.
-  **CLOTHING RULE**: Characters must wear exactly what is described in the prompt. Do not change shoes or clothes between panels.
   `;
-  const promptParts = [`Visual prompt: ${prompt}`];
   
-  if (useGridMode && gridVariations) {
-    // FORCE 2x2 GRID INSTRUCTION
-    promptParts.push(`
-    **MANDATORY LAYOUT: 2x2 GRID (FOUR QUADRANTS)**
-    - The output image MUST be a single image divided into exactly 4 panels (2 rows, 2 columns).
-    - Draw CLEAR BLACK BORDERS between the 4 panels.
-    - Do NOT generate a single scene. Do NOT generate a 1x4 strip.
-    
-    **PANEL ASSIGNMENTS:**
-    1. TOP-LEFT: ${gridVariations[0]}
-    2. TOP-RIGHT: ${gridVariations[1]}
-    3. BOTTOM-LEFT: ${gridVariations[2]}
-    4. BOTTOM-RIGHT: ${gridVariations[3]}
-    
-    CONSISTENCY: Characters must look identical in all 4 panels.
-    `);
+  // Construct the prompt content
+  let promptParts: any[] = [];
+
+  // 1. Add Continuity Image First (Priority)
+  if (continuityImage) {
+      const base64Data = continuityImage.includes(',') ? continuityImage.split(',')[1] : continuityImage;
+      promptParts.push({ text: "**SCENE CONTINUITY REFERENCE (HIGHEST PRIORITY)**: This is the immediately preceding moment. Match the clothing/state shown here exactly." });
+      promptParts.push({ inlineData: { mimeType: 'image/png', data: base64Data } });
   }
 
-  const parts: any[] = [{ text: promptParts.join("\n") }];
-  
+  // 2. Add Character/Setting Refs
   if (refImages && refImages.length > 0) {
+    promptParts.push({ text: "**IDENTITY REFERENCE (LOWER PRIORITY)**: Use these ONLY for facial features and hair. Ignore clothing if it conflicts with the Continuity Image." });
     refImages.forEach(b64 => {
       const base64Data = b64.includes(',') ? b64.split(',')[1] : b64;
-      parts.push({ inlineData: { mimeType: 'image/png', data: base64Data } });
+      promptParts.push({ inlineData: { mimeType: 'image/png', data: base64Data } });
     });
-    parts.push({ text: "Use these images for strict style and identity ground truth." });
+  }
+
+  // 3. Add Prompt
+  if (useGridMode && gridVariations && gridVariations.length >= 4) {
+    // REPLICATING THE PROVEN PROMPT STRUCTURE:
+    const gridPrompt = `2x2 image: Top left image: ${gridVariations[0]} Top right image: ${gridVariations[1]} Bottom left image: ${gridVariations[2]} Bottom right image: ${gridVariations[3]}`;
+    promptParts.push({ text: gridPrompt });
+  } else {
+    promptParts.push({ text: `Visual prompt: ${prompt}` });
   }
 
   try {
       const response = await ai.models.generateContent({
         model: MODEL_IMAGE_GEN,
-        contents: { parts },
+        contents: { parts: promptParts },
         config: { imageConfig: { aspectRatio, imageSize }, systemInstruction }
       });
       const data = response.candidates?.[0].content.parts.find((p: any) => p.inlineData)?.inlineData?.data;
@@ -508,7 +509,7 @@ export const generateImage = async (
   } catch (error: any) {
       const fallbackResponse = await ai.models.generateContent({
         model: MODEL_IMAGE_GEN_FALLBACK,
-        contents: { parts },
+        contents: { parts: promptParts },
         config: { imageConfig: { aspectRatio } },
       });
       const data = fallbackResponse.candidates?.[0].content.parts.find((p: any) => p.inlineData)?.inlineData?.data;
