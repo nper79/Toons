@@ -12,6 +12,9 @@ const MODEL_TTS = 'gemini-2.5-flash-preview-tts';
 const MODEL_VIDEO_FAST = 'veo-3.1-fast-generate-preview';
 const MODEL_VIDEO_HD = 'veo-3.1-generate-preview';
 
+// NEW: Ultra-fast model for dictionary lookups
+const MODEL_FAST_DEFINITIONS = 'gemini-flash-lite-latest';
+
 export const VOICES = [
   { name: 'Puck', gender: 'Male', style: 'Neutral & Clear' },
   { name: 'Charon', gender: 'Male', style: 'Deep & Grave' },
@@ -171,7 +174,7 @@ export const getWordDefinition = async (word: string, contextSentence: string, t
   };
 
   const response = await ai.models.generateContent({
-    model: 'gemini-3-flash-preview',
+    model: MODEL_FAST_DEFINITIONS,
     contents: `Define the word "${word}" found in this sentence: "${contextSentence}". 
     Translate the definition into ${targetLanguage}. Keep it concise (under 20 words).`,
     config: {
@@ -220,7 +223,7 @@ export const batchDefineVocabulary = async (
 
         try {
             const response = await ai.models.generateContent({
-                model: 'gemini-3-flash-preview',
+                model: MODEL_FAST_DEFINITIONS,
                 contents: `
                 Act as a Dictionary. Define the following words into ${targetLanguage}.
                 Return a JSON array.

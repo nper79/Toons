@@ -198,19 +198,20 @@ export default function App() {
   const handleBatchVocabulary = async () => {
       if (!storyData || isVocabGenerating) return;
       setIsVocabGenerating(true);
-      addToast("Generating Global Vocabulary... This process is exhaustive.", "info");
+      addToast("Generating Global Vocabulary... This might take a moment.", "info");
 
       try {
           let updatedVocabulary = { ...(storyData.vocabulary || {}) };
           const wordsByLang: Record<string, Set<string>> = {};
 
-          // Helper to add words cleanly
+          // Helper to add words cleanly using Unicode properties
+          // Removes everything that is NOT a Letter (L) or Number (N)
+          const cleanWordRegex = /[^\p{L}\p{N}]+/gu;
+
           const collect = (lang: string, candidates: string[]) => {
               if (!wordsByLang[lang]) wordsByLang[lang] = new Set();
               candidates.forEach(w => {
-                  // Normalize: remove Western AND Asian punctuation
-                  // includes: .,!?;:"“’'”()\-\[\] and 。、！ ？「」（）
-                  const clean = w.replace(/[.,!?;:"“’'”()\-\[\]。、！ ？「」（）]+/g, "").trim();
+                  const clean = w.replace(cleanWordRegex, "").trim();
                   if (clean.length > 0) wordsByLang[lang].add(clean);
               });
           };
@@ -234,7 +235,7 @@ export default function App() {
                           collect(lang, translation.text.split(/\s+/));
                       }
 
-                      // 2. Collect from Captions (CRITICAL FIX FOR CAPTION LOOKUP)
+                      // 2. Collect from Captions
                       translation.captions.forEach(cap => {
                           if (isAsian && typeof Intl !== 'undefined' && (Intl as any).Segmenter) {
                               try {
@@ -242,7 +243,6 @@ export default function App() {
                                   const segments = Array.from(segmenter.segment(cap)).map((seg: any) => seg.segment);
                                   collect(lang, segments);
                               } catch (e) {
-                                  // Fallback
                                   collect(lang, cap.split(/\s+/)); 
                               }
                           } else {
@@ -257,7 +257,8 @@ export default function App() {
           for (const [sourceLang, wordSet] of Object.entries(wordsByLang)) {
               addToast(`Indexing vocabulary for ${sourceLang}...`, "info");
               
-              const uniqueWords = Array.from(wordSet).slice(0, 100); // Limit to top 100 unique words
+              // REMOVED THE .slice(0, 100) LIMIT. Now processes all unique words.
+              const uniqueWords = Array.from(wordSet);
 
               if (uniqueWords.length === 0) continue;
 
@@ -268,17 +269,26 @@ export default function App() {
 
                   addToast(`Defining ${sourceLang} terms in ${targetLang}...`, "info");
                   
+                  // Filter words that are NOT yet in vocabulary
                   const wordsToFetch = uniqueWords.filter(word => 
                       !updatedVocabulary[word] || !updatedVocabulary[word][targetLang]
                   );
 
                   if (wordsToFetch.length > 0) {
-                      const definitions = await GeminiService.batchDefineVocabulary(wordsToFetch, targetLang);
-                      
-                      Object.entries(definitions).forEach(([word, def]) => {
-                          if (!updatedVocabulary[word]) updatedVocabulary[word] = {};
-                          updatedVocabulary[word][targetLang] = def;
-                      });
+                      // Process in batches implicitly handled by service or we loop here
+                      // We'll loop here to ensure UI responsiveness updates
+                      const BATCH_SIZE = 50;
+                      for (let i = 0; i < wordsToFetch.length; i += BATCH_SIZE) {
+                          const batch = wordsToFetch.slice(i, i + BATCH_SIZE);
+                          const definitions = await GeminiService.batchDefineVocabulary(batch, targetLang);
+                          
+                          Object.entries(definitions).forEach(([word, def]) => {
+                              if (!updatedVocabulary[word]) updatedVocabulary[word] = {};
+                              updatedVocabulary[word][targetLang] = def;
+                          });
+                          
+                          // Optional: Update state progressively (optional, might cause re-renders)
+                      }
                   }
               }
           }

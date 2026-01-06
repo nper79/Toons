@@ -30,8 +30,9 @@ const InteractiveText: React.FC<InteractiveTextProps> = ({
     e.stopPropagation();
     if (!rawWord || !rawWord.trim()) return;
 
-    // Normalize the word: Remove common punctuation (Western & Asian) to match cache keys
-    const cleanWord = rawWord.replace(/[.,!?;:"“’'”()\-\[\]。、！ ？「」（）]+/g, "").trim();
+    // Normalize the word: Use robust Unicode regex to remove anything that is NOT a Letter or Number
+    // This matches the generator logic in App.tsx
+    const cleanWord = rawWord.replace(/[^\p{L}\p{N}]+/gu, "").trim();
     if (!cleanWord) return;
 
     const rect = (e.target as HTMLElement).getBoundingClientRect();
