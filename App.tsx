@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Layout, Clapperboard, Layers, ChevronRight, Key, ExternalLink, Download, Upload, XCircle, CheckCircle, Info, AlertTriangle, Users, BookOpen, PenTool, Languages, Home as HomeIcon, Plus, Palette, Book, Globe, Library, FileText, Image as ImageIcon, Zap } from 'lucide-react';
+import { Layout, Clapperboard, Layers, ChevronRight, ExternalLink, Download, Upload, XCircle, CheckCircle, Info, AlertTriangle, Users, BookOpen, PenTool, Languages, Home as HomeIcon, Plus, Palette, Book, Globe, Library, FileText, Image as ImageIcon, Zap } from 'lucide-react';
 import StoryInput from './components/StoryInput';
 import AssetGallery from './components/AssetGallery';
 import Storyboard from './components/Storyboard';
-import { StoryData, ProcessingStatus, AspectRatio, ImageSize, TranslationCache } from './types';
+import { StoryData, StorySegment, ProcessingStatus, AspectRatio, ImageSize, TranslationCache } from './types';
 import * as GeminiService from './services/geminiService';
 import * as StorageService from './services/storageService';
 import { cropGridCell, compressImage } from './utils/imageUtils';
@@ -18,11 +18,6 @@ enum Tab {
   INPUT = 'input',
   ASSETS = 'assets',
   STORYBOARD = 'storyboard'
-}
-
-interface AIStudio {
-  hasSelectedApiKey(): Promise<boolean>;
-  openSelectKey(): Promise<void>;
 }
 
 // Available Languages for Dropdowns
@@ -40,7 +35,6 @@ const LANGUAGES = [
 ];
 
 export default function App() {
-  const [hasApiKey, setHasApiKey] = useState(false);
   const [currentView, setCurrentView] = useState<View>(View.STUDIO);
   const [activeTab, setActiveTab] = useState<Tab>(Tab.INPUT);
   const [status, setStatus] = useState<ProcessingStatus>(ProcessingStatus.IDLE);
@@ -68,16 +62,6 @@ export default function App() {
   };
 
   useEffect(() => {
-    const checkKey = async () => {
-      const aistudio = (window as any).aistudio as AIStudio | undefined;
-      if (aistudio) {
-        try {
-          const selected = await aistudio.hasSelectedApiKey();
-          if (selected) setHasApiKey(true);
-        } catch (e) { console.error("Error checking API key:", e); }
-      }
-    };
-    checkKey();
     const cleanupBackground = () => {
         const canvases = document.querySelectorAll('body > canvas');
         canvases.forEach((c: any) => {
@@ -89,16 +73,6 @@ export default function App() {
     const interval = setInterval(cleanupBackground, 500);
     return () => clearInterval(interval);
   }, []);
-
-  const handleSelectKey = async () => {
-    const aistudio = (window as any).aistudio as AIStudio | undefined;
-    if (aistudio) {
-      try {
-        await aistudio.openSelectKey();
-        setHasApiKey(true);
-      } catch (e) { console.error("Error selecting API key:", e); }
-    }
-  };
 
   const handleAnalyzeStory = async (text: string, style: string) => {
     setStatus(ProcessingStatus.ANALYZING);
@@ -309,38 +283,93 @@ export default function App() {
       }
   };
 
+  const hasUsableTranslation = (segment: StorySegment, language: string) => {
+    const cache = segment.translations?.[language];
+    if (!cache || typeof cache.text !== 'string' || cache.text.trim().length === 0) return false;
+
+    const panels = segment.panels || [];
+    if (!cache.captions || cache.captions.length < panels.length) {
+        if (panels.some(p => (p.caption || '').trim().length > 0)) return false;
+    } else {
+        for (let i = 0; i < panels.length; i++) {
+            const sourceCaption = panels[i]?.caption || '';
+            if (sourceCaption.trim().length > 0 && (!cache.captions[i] || cache.captions[i].trim().length === 0)) {
+                return false;
+            }
+        }
+    }
+
+    const choices = segment.choices || [];
+    if (choices.length > 0) {
+        if (!cache.choices || cache.choices.length < choices.length) return false;
+        for (let i = 0; i < choices.length; i++) {
+            const sourceChoice = choices[i]?.text || '';
+            if (sourceChoice.trim().length > 0 && (!cache.choices[i] || cache.choices[i].trim().length === 0)) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+  };
+
+  const applyTranslationCache = (segment: StorySegment, language: string) => {
+    const cache = segment.translations?.[language];
+    if (!cache || !cache.text || cache.text.trim().length === 0) return segment;
+
+    return {
+        ...segment,
+        text: cache.text,
+        tokens: cache.tokens,
+        panels: segment.panels.map((p, idx) => ({ ...p, caption: cache.captions?.[idx] || p.caption })),
+        choices: segment.choices?.map((c, idx) => ({ ...c, text: cache.choices?.[idx] || c.text }))
+    };
+  };
+
   const handleOpenReader = async () => {
     if (!storyData) return;
     setIsTranslating(true);
     
     try {
-        // 1. Check if we already have the translation in cache
-        const isTranslationAvailable = storyData.segments.every(s => 
-            (s.translations && s.translations[learningLanguage])
-        );
+        const segmentsMissingTranslation = storyData.segments.filter(s => !hasUsableTranslation(s, learningLanguage));
+        let updatedSegments = storyData.segments;
 
-        let translatedSegments;
-
-        if (isTranslationAvailable) {
-            console.log("Using cached translations.");
-            // Reconstruct segments from cache
-            translatedSegments = storyData.segments.map(s => {
-                const cache = s.translations![learningLanguage];
-                return {
-                    ...s,
-                    text: cache.text,
-                    tokens: cache.tokens,
-                    panels: s.panels.map((p, idx) => ({ ...p, caption: cache.captions[idx] || p.caption })),
-                    choices: s.choices?.map((c, idx) => ({ ...c, text: cache.choices[idx] || c.text }))
-                };
-            });
+        if (segmentsMissingTranslation.length === 0) {
             addToast(`Opening ${learningLanguage} Reader (Cached).`, "success");
         } else {
-            console.log("Translation not found in cache. Generating...");
-            addToast(`Translating story to ${learningLanguage}...`, "info");
-            // Translate on the fly
-            translatedSegments = await GeminiService.translateSegments(storyData.segments, learningLanguage);
+            addToast(`Translating ${segmentsMissingTranslation.length} segments to ${learningLanguage}...`, "info");
+            const translatedResults = await GeminiService.translateSegments(segmentsMissingTranslation, learningLanguage);
+
+            updatedSegments = storyData.segments.map(seg => {
+                const translatedSeg = translatedResults.find(t => t.id === seg.id);
+                if (!translatedSeg || !translatedSeg.text || translatedSeg.text.trim().length === 0) return seg;
+
+                return {
+                    ...seg,
+                    translations: {
+                        ...(seg.translations || {}),
+                        [learningLanguage]: {
+                            text: translatedSeg.text,
+                            tokens: translatedSeg.tokens || [],
+                            captions: translatedSeg.panels.map(p => p.caption),
+                            choices: translatedSeg.choices?.map(c => c.text) || []
+                        }
+                    }
+                };
+            });
+
+            setStoryData(prev => prev ? ({
+                ...prev,
+                segments: updatedSegments,
+                completedTranslations: {
+                    ...(prev.completedTranslations || {}),
+                    [learningLanguage]: updatedSegments.every(s => hasUsableTranslation(s, learningLanguage))
+                }
+            }) : null);
+            addToast("Translation complete.", "success");
         }
+
+        const translatedSegments = updatedSegments.map(s => applyTranslationCache(s, learningLanguage));
         
         setReaderData({
             ...storyData,
@@ -349,9 +378,8 @@ export default function App() {
             nativeLanguage
         });
         setShowReader(true);
-        if (!isTranslationAvailable) addToast("Translation complete.", "success");
 
-    } catch (e) {
+      } catch (e) {
         addToast("Translation failed. Opening original.", "error");
         setReaderData(storyData); // Fallback
         setShowReader(true);
@@ -791,18 +819,6 @@ export default function App() {
       addToast("Project imported.", "success");
     } catch (e) { alert("Import failed."); } finally { if (fileInputRef.current) fileInputRef.current.value = ''; }
   };
-
-  if (!hasApiKey) {
-    return (
-      <div className="min-h-screen bg-[#0f172a] flex flex-col items-center justify-center p-4 relative z-50">
-        <div className="max-w-md w-full bg-slate-800 rounded-xl p-8 border border-slate-700 shadow-2xl text-center">
-          <Key className="w-16 h-16 text-indigo-400 mx-auto mb-6" />
-          <h1 className="text-3xl font-bold text-white mb-4">Access Required</h1>
-          <button onClick={handleSelectKey} className="w-full bg-indigo-600 text-white font-bold py-4 rounded-lg">Select API Key</button>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen bg-[#0f172a] text-slate-200 relative z-50 flex flex-col">
