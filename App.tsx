@@ -1073,9 +1073,6 @@ export default function App() {
                     onClose={() => setShowReader(false)}
                     onPlayAudio={handleGenerateAndPlayAudio}
                     onStopAudio={handleStopAudio}
-                    nativeLanguage={nativeLanguage}
-                    learningLanguage={readerData.learningLanguage}
-                    vocabulary={storyData?.vocabulary}
                 />
             ) : (
                 <SlideshowPlayer

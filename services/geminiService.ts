@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type, Modality } from "@google/genai";
-import { StoryData, AspectRatio, ImageSize, ManhwaPanel, StorySegment, WordDefinition } from "../types";
+import { StoryData, AspectRatio, ImageSize, ManhwaPanel, StorySegment, WordDefinition, SpeechBubble, BubbleType, TailDirection, TextPanel, TextPanelType, VNSpeech, VNSpeechType } from "../types";
 import { compressImage } from "../utils/imageUtils";
 
 const getAi = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -2115,4 +2115,876 @@ Generate detailed analysis for this beat.`;
         isSilent: !beatText || beatText.trim().length === 0,
         ...result
     };
+};
+
+/**
+ * Analyze image to detect faces, bodies, and existing text/elements
+ * This helps avoid placing speech bubbles over important visual elements
+ */
+const analyzeImageForSafeBubbleZones = async (imageUrl: string): Promise<any> => {
+    const ai = getAi();
+
+    const analysisSchema = {
+        type: Type.OBJECT,
+        properties: {
+            faces: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        position: { type: Type.STRING, description: "Location description like 'left side', 'center', 'right side'" },
+                        boundingBox: {
+                            type: Type.OBJECT,
+                            properties: {
+                                x: { type: Type.NUMBER, description: "X center as percentage (0-100)" },
+                                y: { type: Type.NUMBER, description: "Y center as percentage (0-100)" },
+                                width: { type: Type.NUMBER, description: "Width as percentage" },
+                                height: { type: Type.NUMBER, description: "Height as percentage" }
+                            }
+                        }
+                    }
+                }
+            },
+            bodies: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        position: { type: Type.STRING },
+                        boundingBox: {
+                            type: Type.OBJECT,
+                            properties: {
+                                x: { type: Type.NUMBER },
+                                y: { type: Type.NUMBER },
+                                width: { type: Type.NUMBER },
+                                height: { type: Type.NUMBER }
+                            }
+                        }
+                    }
+                }
+            },
+            existingText: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        text: { type: Type.STRING, description: "Text already in the image" },
+                        position: {
+                            type: Type.OBJECT,
+                            properties: {
+                                x: { type: Type.NUMBER },
+                                y: { type: Type.NUMBER }
+                            }
+                        }
+                    }
+                },
+                description: "Any text, numbers, or labels already visible in the image"
+            },
+            safeZones: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        description: { type: Type.STRING, description: "Description like 'top-left corner', 'bottom center', 'left margin'" },
+                        boundingBox: {
+                            type: Type.OBJECT,
+                            properties: {
+                                x: { type: Type.NUMBER },
+                                y: { type: Type.NUMBER },
+                                width: { type: Type.NUMBER },
+                                height: { type: Type.NUMBER }
+                            }
+                        },
+                        priority: { type: Type.NUMBER, description: "1-10, higher is better for bubble placement" }
+                    }
+                },
+                description: "Empty areas safe for placing speech bubbles"
+            }
+        },
+        required: ["faces", "bodies", "existingText", "safeZones"]
+    };
+
+    const base64Data = imageUrl.includes(',') ? imageUrl.split(',')[1] : imageUrl;
+
+    const response = await ai.models.generateContent({
+        model: MODEL_TEXT_ANALYSIS,
+        contents: {
+            parts: [
+                { inlineData: { mimeType: 'image/png', data: base64Data } },
+                { text: `CRITICAL ANALYSIS: Analyze this manhwa/webtoon panel image in EXTREME detail.
+
+Your task is to map out the image so we can place speech bubbles WITHOUT covering faces or important elements.
+
+ANALYZE:
+1. **FACES**: Find every face/head. Give precise bounding boxes (x, y, width, height as percentages).
+2. **BODIES**: Find character bodies/torsos. Give bounding boxes.
+3. **EXISTING TEXT/NUMBERS**: Detect ANY text, numbers, labels already in the image (like "0%", "12%", signs, etc.). We must NOT duplicate this text!
+4. **SAFE ZONES**: Identify EMPTY areas (backgrounds, sky, edges, margins) where bubbles can go without covering anything important.
+
+For safe zones, prioritize:
+- Corners and edges (if empty)
+- Background areas (sky, walls, empty space)
+- Areas between characters
+- Top/bottom margins
+
+Rate each safe zone 1-10 (10 = perfect, lots of space; 1 = tight fit)` }
+            ]
+        },
+        config: {
+            responseMimeType: "application/json",
+            responseSchema: analysisSchema,
+            thinkingConfig: { thinkingBudget: 4096 }
+        }
+    });
+
+    return JSON.parse(response.text || '{"faces": [], "bodies": [], "existingText": [], "safeZones": []}');
+};
+
+/**
+ * Generate Speech Bubbles for a webtoon panel
+ * Uses 2-phase approach: analyze image first, then position bubbles safely
+ */
+export const generateSpeechBubbles = async (
+    imageUrl: string,
+    dialogueText: string,
+    characters: string[],
+    beatContext?: string
+): Promise<{ speechBubbles: any[] }> => {
+    const ai = getAi();
+
+    // PHASE 1: Analyze image to find safe zones
+    console.log('📸 Phase 1: Analyzing image for safe bubble placement zones...');
+    const imageAnalysis = await analyzeImageForSafeBubbleZones(imageUrl);
+    console.log(`✅ Found ${imageAnalysis.faces.length} faces, ${imageAnalysis.existingText.length} existing text elements, ${imageAnalysis.safeZones.length} safe zones`);
+
+    // PHASE 2: Generate bubbles using safe zones
+    const schema = {
+        type: Type.OBJECT,
+        properties: {
+            speechBubbles: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        id: { type: Type.STRING, description: "Unique ID like 'bubble-1'" },
+                        speaker: { type: Type.STRING, description: "Character name or 'narrator'" },
+                        text: { type: Type.STRING, description: "The dialogue text" },
+                        position: {
+                            type: Type.OBJECT,
+                            properties: {
+                                x: { type: Type.NUMBER, description: "X coordinate as percentage (0-100)" },
+                                y: { type: Type.NUMBER, description: "Y coordinate as percentage (0-100)" }
+                            },
+                            required: ["x", "y"]
+                        },
+                        bubbleType: {
+                            type: Type.STRING,
+                            enum: ['speech', 'thought', 'narration', 'shout', 'whisper', 'scream'],
+                            description: "Type of speech bubble"
+                        },
+                        tailDirection: {
+                            type: Type.STRING,
+                            enum: ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'left', 'right', 'none'],
+                            description: "Direction the bubble tail points towards the speaker"
+                        },
+                        size: {
+                            type: Type.OBJECT,
+                            properties: {
+                                width: { type: Type.NUMBER, description: "Estimated width as percentage (15-35)" },
+                                height: { type: Type.NUMBER, description: "Estimated height as percentage (10-25)" }
+                            },
+                            required: ["width", "height"]
+                        },
+                        style: {
+                            type: Type.OBJECT,
+                            properties: {
+                                backgroundColor: { type: Type.STRING, description: "Hex color like #ffffff" },
+                                borderColor: { type: Type.STRING, description: "Hex color like #000000" },
+                                textColor: { type: Type.STRING, description: "Hex color like #000000" },
+                                fontSize: { type: Type.NUMBER, description: "Relative size (0.8-1.3)" }
+                            }
+                        },
+                        order: { type: Type.NUMBER, description: "Reading order (1, 2, 3...)" }
+                    },
+                    required: ["id", "speaker", "text", "position", "bubbleType", "tailDirection", "size", "order"]
+                }
+            }
+        },
+        required: ["speechBubbles"]
+    };
+
+    // Build system instruction with analysis data
+    const facesInfo = imageAnalysis.faces.length > 0
+        ? `\n=== FACES TO AVOID ===\n${imageAnalysis.faces.map((f: any, i: number) =>
+            `Face ${i + 1}: ${f.position} (x:${f.boundingBox.x}%, y:${f.boundingBox.y}%, w:${f.boundingBox.width}%, h:${f.boundingBox.height}%)`
+        ).join('\n')}\nNEVER place bubbles over these areas!`
+        : '';
+
+    const existingTextInfo = imageAnalysis.existingText.length > 0
+        ? `\n=== TEXT ALREADY IN IMAGE ===\n${imageAnalysis.existingText.map((t: any) =>
+            `"${t.text}" at (x:${t.position.x}%, y:${t.position.y}%)`
+        ).join('\n')}\nDO NOT duplicate this text in your bubbles!`
+        : '';
+
+    const safeZonesInfo = imageAnalysis.safeZones.length > 0
+        ? `\n=== SAFE ZONES (USE THESE!) ===\n${imageAnalysis.safeZones.map((z: any) =>
+            `Zone: ${z.description} (x:${z.boundingBox.x}%, y:${z.boundingBox.y}%, w:${z.boundingBox.width}%, h:${z.boundingBox.height}%) - Priority: ${z.priority}/10`
+        ).join('\n')}\nPrioritize high-priority zones!`
+        : '';
+
+    const systemInstruction = `You are a professional Webtoon Speech Bubble Designer.
+
+IMAGE ANALYSIS RESULTS:
+${facesInfo}
+${existingTextInfo}
+${safeZonesInfo}
+
+CRITICAL PLACEMENT RULES:
+1. **MUST USE SAFE ZONES**: Position bubbles ONLY in the safe zones identified above
+2. **NEVER cover faces**: Avoid all face bounding boxes by at least 15% margin
+3. **DO NOT duplicate existing text**: If text/numbers already exist in the image, don't add them again
+4. **USE APPROPRIATE SIZES**:
+   - Short text (1-30 chars): width 20-25%, height 12-18%
+   - Medium text (31-60 chars): width 28-35%, height 18-25%
+   - Long text (61+ chars): width 35-45%, height 25-35%
+5. **MAXIMUM 3 BUBBLES per panel**: Don't create too many small bubbles, combine into fewer larger ones
+6. **SPREAD BUBBLES OUT**: Maintain at least 20% distance between bubble centers
+7. **AVOID BOTTOM 15%**: Don't place bubbles in the very bottom of the image
+
+READING ORDER (Korean Webtoon):
+- Top to bottom flow
+- If multiple bubbles at same height, left-to-right
+- Number them: 1, 2, 3...
+
+BUBBLE TYPES:
+- 'speech': Normal dialogue (rounded bubble)
+- 'thought': Internal thoughts (cloud-style)
+- 'narration': Narrator text (rectangular, no tail)
+- 'shout': Loud speech (use for exclamations)
+- 'whisper': Quiet speech
+
+TAIL DIRECTION - MUST POINT TO SPEAKER'S MOUTH:
+1. Identify where the speaker's FACE/MOUTH is in the image
+2. Determine bubble position relative to face:
+   - If bubble is ABOVE-LEFT of face → tail points 'bottom-right' (towards face below-right)
+   - If bubble is ABOVE-RIGHT of face → tail points 'bottom-left' (towards face below-left)
+   - If bubble is BELOW-LEFT of face → tail points 'top-right' (towards face above-right)
+   - If bubble is BELOW-RIGHT of face → tail points 'top-left' (towards face above-left)
+   - If bubble is DIRECTLY LEFT of face → tail points 'right' (towards face)
+   - If bubble is DIRECTLY RIGHT of face → tail points 'left' (towards face)
+   - If bubble is DIRECTLY ABOVE face → tail points down (use 'bottom-left' or 'bottom-right')
+   - If bubble is DIRECTLY BELOW face → tail points up (use 'top-left' or 'top-right')
+3. For NARRATOR boxes or off-screen speakers → use 'none'
+
+EXAMPLE: If speaker's face is at (40%, 60%) and bubble is at (20%, 30%):
+- Bubble is LEFT and ABOVE the face
+- Tail should point 'bottom-right' (towards the face)
+
+SIZE GUIDELINES - CALCULATE BASED ON TEXT LENGTH:
+- Very short (1-10 chars): width 15-18%, height 12-15%
+- Short (11-25 chars): width 20-25%, height 15-18%
+- Medium (26-50 chars): width 25-30%, height 18-22%
+- Long (51-80 chars): width 30-35%, height 22-28%
+- Very long (80+ chars): width 35-40%, height 28-35% OR split into multiple bubbles
+
+CRITICAL: Ensure bubbles are LARGE ENOUGH to fit all text comfortably. Better too big than text overflowing!
+
+Characters: ${characters.join(', ')}
+${beatContext ? `Context: ${beatContext}` : ''}
+
+IMPORTANT: Split dialogue intelligently into 2-3 smaller bubbles if it's too long.`;
+
+    const base64Data = imageUrl.includes(',') ? imageUrl.split(',')[1] : imageUrl;
+
+    // Build detailed face positions for tail direction calculation
+    const facePositionsText = imageAnalysis.faces.length > 0
+        ? `\n\nFACE POSITIONS (for tail direction):\n${imageAnalysis.faces.map((f: any, i: number) =>
+            `Face ${i + 1}: Center at (${f.boundingBox.x}%, ${f.boundingBox.y}%) - ${f.position}`
+        ).join('\n')}`
+        : '';
+
+    const parts: any[] = [
+        { inlineData: { mimeType: 'image/png', data: base64Data } },
+        { text: `Using the safe zones identified above, place speech bubbles for this dialogue:
+
+"${dialogueText}"
+
+REQUIREMENTS:
+1. Place bubbles ONLY in safe zones identified above
+2. DO NOT cover faces (avoid all face bounding boxes)
+3. Calculate bubble size based on text length - ensure text fits comfortably
+4. For each bubble, determine tail direction by:
+   a. Identifying which character is speaking
+   b. Finding that character's face position from the list above
+   c. Calculating tail direction so it points FROM bubble CENTER TO face position
+${facePositionsText}
+
+Make bubbles LARGE ENOUGH for text. Better too big than text overflowing!` }
+    ];
+
+    const response = await ai.models.generateContent({
+        model: MODEL_TEXT_ANALYSIS,
+        contents: { parts },
+        config: {
+            responseMimeType: "application/json",
+            responseSchema: schema,
+            systemInstruction,
+            thinkingConfig: { thinkingBudget: 4096 }
+        }
+    });
+
+    const result = JSON.parse(response.text || '{"speechBubbles": []}');
+
+    // Post-process: Comprehensive validation and adjustment
+    if (result.speechBubbles && result.speechBubbles.length > 0) {
+        // Limit to max 3-4 bubbles per panel - combine if more
+        if (result.speechBubbles.length > 4) {
+            console.log(`⚠️ Too many bubbles (${result.speechBubbles.length}), combining...`);
+            result.speechBubbles = combineBubbles(result.speechBubbles, 3);
+        }
+        result.speechBubbles = validateAndAdjustBubbles(result.speechBubbles);
+    }
+
+    console.log(`💬 Generated ${result.speechBubbles?.length || 0} speech bubbles for panel`);
+
+    return result;
+};
+
+/**
+ * Combine multiple bubbles into fewer bubbles when there are too many
+ */
+const combineBubbles = (bubbles: any[], maxBubbles: number): any[] => {
+    if (bubbles.length <= maxBubbles) return bubbles;
+
+    // Sort by reading order
+    const sorted = [...bubbles].sort((a, b) => a.order - b.order);
+
+    // Combine into maxBubbles groups
+    const combined: any[] = [];
+    const groupSize = Math.ceil(sorted.length / maxBubbles);
+
+    for (let i = 0; i < maxBubbles; i++) {
+        const start = i * groupSize;
+        const end = Math.min(start + groupSize, sorted.length);
+        const group = sorted.slice(start, end);
+
+        if (group.length === 0) continue;
+
+        // Combine texts
+        const combinedText = group.map(b => b.text).join(' ');
+
+        // Use first bubble's properties as base
+        const base = group[0];
+
+        combined.push({
+            ...base,
+            id: `bubble-combined-${i + 1}`,
+            text: combinedText,
+            order: i + 1,
+            // Prefer narration type for combined text
+            bubbleType: group.some(b => b.bubbleType === 'narration') ? 'narration' : base.bubbleType
+        });
+    }
+
+    return combined;
+};
+
+/**
+ * Comprehensive bubble validation and adjustment
+ * Ensures bubbles fit text, don't overlap, and stay within image bounds
+ */
+const validateAndAdjustBubbles = (bubbles: any[]): any[] => {
+    const PADDING = 5; // Margin from image edges (%)
+    const MIN_GAP = 3; // Minimum gap between bubbles (%)
+
+    // Step 1: Calculate proper sizes based on text length
+    let adjustedBubbles = bubbles.map((bubble: any) => {
+        const textLength = bubble.text.length;
+        const wordCount = bubble.text.split(/\s+/).length;
+
+        // More aggressive size calculation
+        // Estimate: ~6-8 characters per line, ~20px per line height
+        const charsPerLine = 15; // Conservative estimate
+        const estimatedLines = Math.ceil(textLength / charsPerLine);
+
+        let width: number;
+        let height: number;
+
+        if (textLength <= 15) {
+            width = 18;
+            height = 12;
+        } else if (textLength <= 30) {
+            width = 25;
+            height = 15;
+        } else if (textLength <= 50) {
+            width = 30;
+            height = Math.max(18, estimatedLines * 5);
+        } else if (textLength <= 80) {
+            width = 35;
+            height = Math.max(22, estimatedLines * 5);
+        } else if (textLength <= 120) {
+            width = 40;
+            height = Math.max(28, estimatedLines * 5);
+        } else {
+            width = 45;
+            height = Math.max(35, estimatedLines * 5);
+        }
+
+        // Cap maximum sizes
+        width = Math.min(width, 50);
+        height = Math.min(height, 45);
+
+        return {
+            ...bubble,
+            size: {
+                width: Math.max(bubble.size?.width || 0, width),
+                height: Math.max(bubble.size?.height || 0, height)
+            }
+        };
+    });
+
+    // Step 2: Ensure bubbles stay within image bounds
+    adjustedBubbles = adjustedBubbles.map((bubble: any) => {
+        let { x, y } = bubble.position;
+        const halfWidth = bubble.size.width / 2;
+        const halfHeight = bubble.size.height / 2;
+
+        // Keep bubble inside image with padding
+        x = Math.max(halfWidth + PADDING, Math.min(100 - halfWidth - PADDING, x));
+        y = Math.max(halfHeight + PADDING, Math.min(100 - halfHeight - PADDING, y));
+
+        return {
+            ...bubble,
+            position: { x, y }
+        };
+    });
+
+    // Step 3: Resolve overlaps by repositioning bubbles
+    adjustedBubbles = resolveOverlaps(adjustedBubbles, MIN_GAP);
+
+    // Step 4: Final bounds check after repositioning
+    adjustedBubbles = adjustedBubbles.map((bubble: any) => {
+        let { x, y } = bubble.position;
+        const halfWidth = bubble.size.width / 2;
+        const halfHeight = bubble.size.height / 2;
+
+        x = Math.max(halfWidth + PADDING, Math.min(100 - halfWidth - PADDING, x));
+        y = Math.max(halfHeight + PADDING, Math.min(100 - halfHeight - PADDING, y));
+
+        return {
+            ...bubble,
+            position: { x, y }
+        };
+    });
+
+    return adjustedBubbles;
+};
+
+/**
+ * Detect and resolve overlaps between bubbles
+ */
+const resolveOverlaps = (bubbles: any[], minGap: number): any[] => {
+    const result = [...bubbles];
+
+    // Sort by reading order (top to bottom, left to right)
+    result.sort((a, b) => {
+        if (Math.abs(a.position.y - b.position.y) < 10) {
+            return a.position.x - b.position.x;
+        }
+        return a.position.y - b.position.y;
+    });
+
+    // Check each pair of bubbles for overlap
+    for (let i = 0; i < result.length; i++) {
+        for (let j = i + 1; j < result.length; j++) {
+            const b1 = result[i];
+            const b2 = result[j];
+
+            if (bubblesOverlap(b1, b2, minGap)) {
+                // Move b2 to avoid overlap
+                const moved = findNonOverlappingPosition(b2, result.slice(0, j), minGap);
+                result[j] = moved;
+            }
+        }
+    }
+
+    return result;
+};
+
+/**
+ * Check if two bubbles overlap (including minimum gap)
+ */
+const bubblesOverlap = (b1: any, b2: any, minGap: number): boolean => {
+    const left1 = b1.position.x - b1.size.width / 2 - minGap;
+    const right1 = b1.position.x + b1.size.width / 2 + minGap;
+    const top1 = b1.position.y - b1.size.height / 2 - minGap;
+    const bottom1 = b1.position.y + b1.size.height / 2 + minGap;
+
+    const left2 = b2.position.x - b2.size.width / 2;
+    const right2 = b2.position.x + b2.size.width / 2;
+    const top2 = b2.position.y - b2.size.height / 2;
+    const bottom2 = b2.position.y + b2.size.height / 2;
+
+    return !(left2 > right1 || right2 < left1 || top2 > bottom1 || bottom2 < top1);
+};
+
+/**
+ * Find a new position for a bubble that doesn't overlap with existing bubbles
+ */
+const findNonOverlappingPosition = (bubble: any, existingBubbles: any[], minGap: number): any => {
+    const originalX = bubble.position.x;
+    const originalY = bubble.position.y;
+
+    // Try different positions: down, right, left, up
+    const offsets = [
+        { dx: 0, dy: 15 },   // Move down
+        { dx: 20, dy: 0 },   // Move right
+        { dx: -20, dy: 0 },  // Move left
+        { dx: 0, dy: -15 },  // Move up
+        { dx: 15, dy: 15 },  // Diagonal down-right
+        { dx: -15, dy: 15 }, // Diagonal down-left
+        { dx: 0, dy: 25 },   // Move further down
+        { dx: 0, dy: -25 },  // Move further up
+    ];
+
+    for (const offset of offsets) {
+        const newX = Math.max(5, Math.min(95, originalX + offset.dx));
+        const newY = Math.max(5, Math.min(95, originalY + offset.dy));
+
+        const testBubble = {
+            ...bubble,
+            position: { x: newX, y: newY }
+        };
+
+        let hasOverlap = false;
+        for (const existing of existingBubbles) {
+            if (bubblesOverlap(existing, testBubble, minGap)) {
+                hasOverlap = true;
+                break;
+            }
+        }
+
+        if (!hasOverlap) {
+            return testBubble;
+        }
+    }
+
+    // If all positions overlap, just move it down significantly
+    return {
+        ...bubble,
+        position: {
+            x: originalX,
+            y: Math.min(90, originalY + 30)
+        }
+    };
+};
+
+// ============================================
+// TEXT PANEL SYSTEM (Webtoon-style)
+// ============================================
+
+/**
+ * Generate Text Panels for webtoon-style display
+ * Analyzes text and creates separate text panels instead of overlaying on images
+ */
+export const generateTextPanels = async (
+    beatId: string,
+    dialogueText: string,
+    characters: string[]
+): Promise<{ textPanels: TextPanel[] }> => {
+    const ai = getAi();
+
+    const schema = {
+        type: Type.OBJECT,
+        properties: {
+            textPanels: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        type: {
+                            type: Type.STRING,
+                            enum: ['narration', 'inner_thought', 'dialogue', 'sfx', 'system'],
+                            description: "Type of text panel"
+                        },
+                        speaker: {
+                            type: Type.STRING,
+                            description: "Character name if dialogue or inner_thought, empty for narration"
+                        },
+                        text: {
+                            type: Type.STRING,
+                            description: "The text content"
+                        },
+                        order: {
+                            type: Type.NUMBER,
+                            description: "Reading order (1, 2, 3...)"
+                        },
+                        position: {
+                            type: Type.STRING,
+                            enum: ['before', 'after'],
+                            description: "Show before or after the image"
+                        }
+                    },
+                    required: ["type", "text", "order", "position"]
+                }
+            }
+        },
+        required: ["textPanels"]
+    };
+
+    const systemInstruction = `You are a Webtoon Text Analyzer. Your job is to analyze story text and split it into separate text panels.
+
+TEXT TYPES:
+1. **narration**: Third-person narrator describing scenes, settings, or events
+   - Example: "The headquarters pierced the clouds of Seoul..."
+   - Example: "Her heart pounded in her chest."
+   - Style: Black text, white/cream background, centered
+
+2. **inner_thought**: Character's internal thoughts (first-person, NOT spoken aloud)
+   - Example: "To me, it was a dungeon."
+   - Example: "Why is he looking at me like that?"
+   - Indicators: First-person pronouns (I, me, my), emotional reactions, questions to self
+   - Style: Italic text, light gray background
+
+3. **dialogue**: Spoken words (said out loud to another character)
+   - Example: "Secretary Lee, come to my office."
+   - Indicators: Direct speech, commands, questions to others, conversation
+   - Style: Regular text, white background with border
+
+4. **system**: Game-like system messages or status displays
+   - Example: "[Affection: 0%]"
+   - Example: "[Status: Nervous]"
+   - Indicators: Square brackets, colons, numerical values
+   - Style: Monospace font, dark background
+
+5. **sfx**: Sound effects (RARE - only for explicit sounds)
+   - Example: "CRASH!", "Thud!", "Ring ring"
+   - Style: Bold text, transparent background
+
+RULES:
+1. Split the text into logical chunks - each distinct thought, statement, or narration is a separate panel
+2. Keep each panel short (1-3 sentences max)
+3. Identify the TYPE correctly based on context
+4. For inner_thought: Look for first-person perspective, emotional reactions, internal questions
+5. For dialogue: Look for spoken words, commands, direct address to others
+6. For narration: Third-person descriptions, scene-setting, action descriptions
+7. Position: Use 'after' for most panels (text appears after image). Use 'before' only for setting-up narration.
+8. If text contains "[Something: value]" patterns, mark as 'system' type
+
+Characters in scene: ${characters.join(', ')}`;
+
+    const response = await ai.models.generateContent({
+        model: MODEL_TEXT_ANALYSIS,
+        contents: {
+            parts: [{ text: `Analyze this story text and split into text panels:\n\n"${dialogueText}"` }]
+        },
+        config: {
+            responseMimeType: "application/json",
+            responseSchema: schema,
+            systemInstruction,
+            thinkingConfig: { thinkingBudget: 2048 }
+        }
+    });
+
+    const result = JSON.parse(response.text || '{"textPanels": []}');
+
+    // Post-process: Add IDs and styles
+    if (result.textPanels) {
+        result.textPanels = result.textPanels.map((panel: any, idx: number) => {
+            const style = getTextPanelStyle(panel.type as TextPanelType);
+            return {
+                id: `panel-${beatId}-${idx + 1}`,
+                beatId,
+                ...panel,
+                style
+            };
+        });
+    }
+
+    console.log(`📝 Generated ${result.textPanels?.length || 0} text panels for beat`);
+
+    return result;
+};
+
+/**
+ * Get default style for a text panel type
+ */
+const getTextPanelStyle = (type: TextPanelType): TextPanel['style'] => {
+    switch (type) {
+        case 'narration':
+            return {
+                backgroundColor: '#f8f8f8',
+                textColor: '#1a1a1a',
+                fontStyle: 'normal',
+                fontWeight: 'normal',
+                textAlign: 'center'
+            };
+        case 'inner_thought':
+            return {
+                backgroundColor: '#f0f0f0',
+                textColor: '#333333',
+                fontStyle: 'italic',
+                fontWeight: 'normal',
+                textAlign: 'center'
+            };
+        case 'dialogue':
+            return {
+                backgroundColor: '#ffffff',
+                textColor: '#000000',
+                fontStyle: 'normal',
+                fontWeight: 'normal',
+                textAlign: 'left'
+            };
+        case 'system':
+            return {
+                backgroundColor: '#1a1a2e',
+                textColor: '#00ff88',
+                fontStyle: 'normal',
+                fontWeight: 'bold',
+                textAlign: 'center'
+            };
+        case 'sfx':
+            return {
+                backgroundColor: 'transparent',
+                textColor: '#000000',
+                fontStyle: 'normal',
+                fontWeight: 'bold',
+                textAlign: 'center'
+            };
+        default:
+            return {
+                backgroundColor: '#ffffff',
+                textColor: '#000000',
+                fontStyle: 'normal',
+                fontWeight: 'normal',
+                textAlign: 'center'
+            };
+    }
+};
+
+/**
+ * Generate VN Speeches for visual novel display
+ * Analyzes text and divides it into sequential speeches/dialogues
+ * Each speech represents one "click" in the visual novel
+ */
+export const generateVNSpeeches = async (
+    beatId: string,
+    dialogueText: string,
+    characters: string[]
+): Promise<{ vnSpeeches: VNSpeech[] }> => {
+    const ai = getAi();
+
+    const schema = {
+        type: Type.OBJECT,
+        properties: {
+            vnSpeeches: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        type: {
+                            type: Type.STRING,
+                            enum: ['dialogue', 'narration', 'inner_thought'],
+                            description: "Type of speech"
+                        },
+                        speaker: {
+                            type: Type.STRING,
+                            description: "Character name for dialogue/inner_thought, empty string for narration"
+                        },
+                        text: {
+                            type: Type.STRING,
+                            description: "The speech text content"
+                        },
+                        order: {
+                            type: Type.NUMBER,
+                            description: "Reading order (1, 2, 3...)"
+                        }
+                    },
+                    required: ["type", "text", "order"]
+                }
+            }
+        },
+        required: ["vnSpeeches"]
+    };
+
+    const systemInstruction = `You are a Visual Novel Speech Analyzer. Your job is to divide story text into sequential speeches for a visual novel format.
+
+In visual novels, the player clicks to advance through dialogue and narration. Each "click" shows one speech bubble at the bottom of the screen.
+
+SPEECH TYPES:
+1. **dialogue**: Character speaking out loud (said to another character)
+   - Example: "My partner canceled. You will attend with me."
+   - Must have speaker name
+   - Direct speech, commands, questions to others, conversation
+
+2. **narration**: Third-person narrator describing scenes
+   - Example: "The headquarters pierced the clouds of Seoul..."
+   - No speaker (narrator is invisible)
+   - Scene descriptions, action descriptions, transitions
+
+3. **inner_thought**: Character's internal thoughts (NOT spoken aloud)
+   - Example: "Why is he looking at me like that?"
+   - Must have speaker name (the character thinking)
+   - First-person perspective, emotional reactions, internal questions
+
+CRITICAL RULES:
+1. **Divide conversations into individual lines**: Each character's statement is a SEPARATE speech
+   - BAD: Create one speech with "Hello! How are you? I'm fine."
+   - GOOD: Create 3 speeches: "Hello!", "How are you?", "I'm fine."
+
+2. **Identify the speaker for EVERY dialogue/thought**: Extract character names from the text
+   - Look for: "said Maria", "John replied", "she thought", "he wondered"
+   - Use character names exactly as they appear in the text
+
+3. **Alternate speakers in conversations**: If you see dialogue without attribution, infer who's speaking based on context and conversation flow
+
+4. **Keep each speech SHORT**: 1-2 sentences max per speech (this is visual novel format!)
+
+5. **Order matters**: Number speeches in the exact order they should appear (1, 2, 3...)
+
+6. **For narration**: Leave speaker empty or set to empty string
+
+EXAMPLE INPUT:
+"Hello, how are you?" said Maria.
+"I'm doing well, thanks!" replied John.
+Maria smiled. "That's great to hear!"
+
+EXAMPLE OUTPUT:
+[
+  {type: "dialogue", speaker: "Maria", text: "Hello, how are you?", order: 1},
+  {type: "dialogue", speaker: "John", text: "I'm doing well, thanks!", order: 2},
+  {type: "narration", speaker: "", text: "Maria smiled.", order: 3},
+  {type: "dialogue", speaker: "Maria", text: "That's great to hear!", order: 4}
+]
+
+Characters in scene: ${characters.join(', ')}`;
+
+    const response = await ai.models.generateContent({
+        model: MODEL_TEXT_ANALYSIS,
+        contents: {
+            parts: [{ text: `Divide this story text into VN speeches:\n\n"${dialogueText}"` }]
+        },
+        config: {
+            responseMimeType: "application/json",
+            responseSchema: schema,
+            systemInstruction,
+            thinkingConfig: { thinkingBudget: 2048 }
+        }
+    });
+
+    const result = JSON.parse(response.text || '{"vnSpeeches": []}');
+
+    // Post-process: Add IDs
+    if (result.vnSpeeches) {
+        result.vnSpeeches = result.vnSpeeches.map((speech: any, idx: number) => ({
+            id: `vnspeech-${beatId}-${idx + 1}`,
+            beatId,
+            ...speech,
+            speaker: speech.speaker || undefined // Convert empty string to undefined
+        }));
+    }
+
+    console.log(`🎭 Generated ${result.vnSpeeches?.length || 0} VN speeches for beat`);
+
+    return result;
 };

@@ -1,21 +1,43 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
     ChevronRight, Users, MapPin, Shirt, Camera,
     Sparkles, Loader2, Trash2, Plus, ArrowDown,
     Square, Focus, Zap, SplitSquareHorizontal, Image as ImageIcon,
     FileText, CheckCircle, Send, MessageSquare, Brain, Eye, Play, RefreshCw,
-    Download, Upload, FolderArchive, UserCircle, Palette, PlayCircle
+    Download, Upload, FolderArchive, UserCircle, Palette, PlayCircle, Save, Library, Clock
 } from 'lucide-react';
-import { StorySegment, BackgroundType, SegmentType, AspectRatio, ImageSize } from '../types';
+import { StorySegment, BackgroundType, SegmentType, AspectRatio, ImageSize, SpeechBubble, TextPanel, VNSpeech } from '../types';
 import * as GeminiService from '../services/geminiService';
 import { BeatAnalysisResult, ExtractedCharacter, CharacterSheet } from '../services/geminiService';
 import JSZip from 'jszip';
-import SlideshowPlayer from './SlideshowPlayer';
+import WebtoonReader from './WebtoonReader';
+import SpeechBubbleRenderer from './SpeechBubbleRenderer';
+import TextPanelRenderer from './TextPanelRenderer';
 
-// Extended beat with image URL
+// Extended beat with image URL, speech bubbles, text panels, and VN speeches
 interface BeatWithImage extends BeatAnalysisResult {
     imageUrl?: string;
     isGenerating?: boolean;
+    speechBubbles?: SpeechBubble[];
+    isGeneratingSpeechBubbles?: boolean;
+    textPanels?: TextPanel[];
+    isGeneratingTextPanels?: boolean;
+    vnSpeeches?: VNSpeech[];
+    isGeneratingVNSpeeches?: boolean;
+}
+
+// Saved story for library
+interface SavedStory {
+    id: string;
+    name: string;
+    dateSaved: string;
+    beatCount: number;
+    imageCount: number;
+    inputText: string;
+    sourceLanguage: string;
+    beats: BeatWithImage[];
+    extractedCharacters: ExtractedCharacter[];
+    characterSheets: CharacterSheet[];
 }
 
 interface BeatMakerProps {
@@ -51,6 +73,14 @@ const BeatMaker: React.FC<BeatMakerProps> = ({ onSegmentsReady, initialText = ''
     const [generatingBeatIndex, setGeneratingBeatIndex] = useState<number>(-1);
     const [imageGenProgress, setImageGenProgress] = useState<string>('');
     const [imagesToGenerate, setImagesToGenerate] = useState<number>(5); // Default to 5
+    const [bubblesToGenerate, setBubblesToGenerate] = useState<number>(5); // Default to 5
+    const [isGeneratingBubbles, setIsGeneratingBubbles] = useState(false);
+    const [bubbleGenProgress, setBubbleGenProgress] = useState<string>('');
+
+    // Text Panels State (Webtoon-style)
+    const [panelsToGenerate, setPanelsToGenerate] = useState<number>(5);
+    const [isGeneratingPanels, setIsGeneratingPanels] = useState(false);
+    const [panelGenProgress, setPanelGenProgress] = useState<string>('');
 
     // Import/Export State
     const [isExporting, setIsExporting] = useState(false);
@@ -67,7 +97,93 @@ const BeatMaker: React.FC<BeatMakerProps> = ({ onSegmentsReady, initialText = ''
     // Player State
     const [showPlayer, setShowPlayer] = useState(false);
 
-    // Convert beats to segments for the player
+    // Story Library State
+    const [savedStories, setSavedStories] = useState<SavedStory[]>([]);
+    const [showLibrary, setShowLibrary] = useState(false);
+    const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+    const [newStoryName, setNewStoryName] = useState('');
+
+    // Load library from localStorage on mount
+    useEffect(() => {
+        const loadLibrary = () => {
+            try {
+                const libraryData = localStorage.getItem('beatmaker_library');
+                if (libraryData) {
+                    const stories: SavedStory[] = JSON.parse(libraryData);
+                    setSavedStories(stories);
+                }
+            } catch (e) {
+                console.error('Failed to load library:', e);
+            }
+        };
+        loadLibrary();
+    }, []);
+
+    // Save current project to library
+    const handleSaveToLibrary = () => {
+        if (!newStoryName.trim() || beats.length === 0) return;
+
+        const newStory: SavedStory = {
+            id: `story-${Date.now()}`,
+            name: newStoryName.trim(),
+            dateSaved: new Date().toISOString(),
+            beatCount: beats.length,
+            imageCount: beats.filter(b => b.imageUrl).length,
+            inputText,
+            sourceLanguage,
+            beats: beats.map(b => ({ ...b, isGenerating: false })),
+            extractedCharacters,
+            characterSheets
+        };
+
+        const updatedLibrary = [...savedStories, newStory];
+        setSavedStories(updatedLibrary);
+
+        try {
+            localStorage.setItem('beatmaker_library', JSON.stringify(updatedLibrary));
+            console.log('✅ Story saved to library:', newStory.name);
+        } catch (e) {
+            console.error('Failed to save to library:', e);
+            setError('Failed to save story. localStorage may be full.');
+        }
+
+        setSaveDialogOpen(false);
+        setNewStoryName('');
+    };
+
+    // Load story from library
+    const handleLoadFromLibrary = (storyId: string) => {
+        const story = savedStories.find(s => s.id === storyId);
+        if (!story) return;
+
+        setInputText(story.inputText);
+        setSourceLanguage(story.sourceLanguage);
+        setBeats(story.beats);
+        setExtractedCharacters(story.extractedCharacters);
+        setCharacterSheets(story.characterSheets);
+
+        if (story.beats.length > 0) {
+            setSelectedBeatId(story.beats[0].id);
+        }
+
+        setShowLibrary(false);
+        console.log('✅ Story loaded from library:', story.name);
+    };
+
+    // Delete story from library
+    const handleDeleteFromLibrary = (storyId: string) => {
+        const updatedLibrary = savedStories.filter(s => s.id !== storyId);
+        setSavedStories(updatedLibrary);
+
+        try {
+            localStorage.setItem('beatmaker_library', JSON.stringify(updatedLibrary));
+            console.log('✅ Story deleted from library');
+        } catch (e) {
+            console.error('Failed to delete from library:', e);
+        }
+    };
+
+    // Convert beats to segments for the player (includes VN speeches)
     const beatsAsSegments: StorySegment[] = useMemo(() => {
         return beats.map(beat => ({
             id: beat.id,
@@ -85,7 +201,8 @@ const BeatMaker: React.FC<BeatMakerProps> = ({ onSegmentsReady, initialText = ''
             type: SegmentType.MAIN,
             selectedGridIndices: beat.imageUrl ? [0] : [],
             generatedImageUrls: beat.imageUrl ? [beat.imageUrl] : [],
-            masterGridImageUrl: beat.imageUrl
+            masterGridImageUrl: beat.imageUrl,
+            vnSpeeches: beat.vnSpeeches // Pass VN speeches to player
         }));
     }, [beats]);
 
@@ -504,6 +621,208 @@ Mood/Atmosphere: ${beat.analysisReasoning}`;
         }
     };
 
+    // Generate speech bubbles for a single beat
+    const handleGenerateSpeechBubbles = async (beatId: string) => {
+        const beat = beats.find(b => b.id === beatId);
+        if (!beat || !beat.imageUrl || !beat.text || beat.isSilent) {
+            console.log('❌ Cannot generate speech bubbles: missing image, text, or beat is silent');
+            return;
+        }
+
+        // Mark as generating
+        setBeats(prev => prev.map(b =>
+            b.id === beatId ? { ...b, isGeneratingSpeechBubbles: true } : b
+        ));
+
+        try {
+            console.log(`💬 Generating speech bubbles for beat "${beat.text.slice(0, 40)}..."`);
+
+            const result = await GeminiService.generateSpeechBubbles(
+                beat.imageUrl,
+                beat.text,
+                beat.characters || [],
+                beat.visualPrompt
+            );
+
+            setBeats(prev => prev.map(b =>
+                b.id === beatId ? {
+                    ...b,
+                    speechBubbles: result.speechBubbles,
+                    isGeneratingSpeechBubbles: false
+                } : b
+            ));
+
+            console.log(`✅ Generated ${result.speechBubbles.length} speech bubbles`);
+
+        } catch (e: any) {
+            console.error(`Failed to generate speech bubbles:`, e);
+            setBeats(prev => prev.map(b =>
+                b.id === beatId ? { ...b, isGeneratingSpeechBubbles: false } : b
+            ));
+            setError(e?.message || 'Speech bubble generation failed');
+        }
+    };
+
+    // Generate speech bubbles for selected number of beats that have images and dialogue
+    const handleGenerateAllSpeechBubbles = async () => {
+        const beatsWithImagesAndText = beats.filter(b => b.imageUrl && b.text && !b.isSilent);
+
+        if (beatsWithImagesAndText.length === 0) {
+            setError('No beats with both images and dialogue to generate bubbles for');
+            return;
+        }
+
+        // Limit to the selected number
+        const beatsToProcess = beatsWithImagesAndText.slice(0, bubblesToGenerate);
+
+        setIsGeneratingBubbles(true);
+        console.log(`💬 Generating speech bubbles for ${beatsToProcess.length} beats...`);
+
+        for (let i = 0; i < beatsToProcess.length; i++) {
+            const beat = beatsToProcess[i];
+            setBubbleGenProgress(`Generating bubbles ${i + 1}/${beatsToProcess.length}...`);
+            await handleGenerateSpeechBubbles(beat.id);
+        }
+
+        setIsGeneratingBubbles(false);
+        setBubbleGenProgress('');
+        console.log('✅ Speech bubbles generated');
+    };
+
+    // Generate text panels for a single beat (Webtoon-style)
+    const handleGenerateTextPanels = async (beatId: string) => {
+        const beat = beats.find(b => b.id === beatId);
+        if (!beat || !beat.text || beat.isSilent) {
+            console.log('❌ Cannot generate text panels: missing text or beat is silent');
+            return;
+        }
+
+        // Mark as generating
+        setBeats(prev => prev.map(b =>
+            b.id === beatId ? { ...b, isGeneratingTextPanels: true } : b
+        ));
+
+        try {
+            console.log(`📝 Generating text panels for beat "${beat.text.slice(0, 40)}..."`);
+
+            const result = await GeminiService.generateTextPanels(
+                beat.id,
+                beat.text,
+                beat.characters || []
+            );
+
+            setBeats(prev => prev.map(b =>
+                b.id === beatId ? {
+                    ...b,
+                    textPanels: result.textPanels,
+                    isGeneratingTextPanels: false
+                } : b
+            ));
+
+            console.log(`✅ Generated ${result.textPanels.length} text panels`);
+
+        } catch (e: any) {
+            console.error(`Failed to generate text panels:`, e);
+            setBeats(prev => prev.map(b =>
+                b.id === beatId ? { ...b, isGeneratingTextPanels: false } : b
+            ));
+            setError(e?.message || 'Text panel generation failed');
+        }
+    };
+
+    // Generate text panels for selected number of beats
+    const handleGenerateAllTextPanels = async () => {
+        const beatsWithText = beats.filter(b => b.text && !b.isSilent);
+
+        if (beatsWithText.length === 0) {
+            setError('No beats with dialogue to generate text panels for');
+            return;
+        }
+
+        // Limit to the selected number
+        const beatsToProcess = beatsWithText.slice(0, panelsToGenerate);
+
+        setIsGeneratingPanels(true);
+        console.log(`📝 Generating text panels for ${beatsToProcess.length} beats...`);
+
+        for (let i = 0; i < beatsToProcess.length; i++) {
+            const beat = beatsToProcess[i];
+            setPanelGenProgress(`Generating panels ${i + 1}/${beatsToProcess.length}...`);
+            await handleGenerateTextPanels(beat.id);
+        }
+
+        setIsGeneratingPanels(false);
+        setPanelGenProgress('');
+        console.log('✅ Text panels generated');
+    };
+
+    // Generate VN speeches for a single beat (Visual Novel style)
+    const handleGenerateVNSpeeches = async (beatId: string) => {
+        const beat = beats.find(b => b.id === beatId);
+        if (!beat || !beat.text || beat.isSilent) {
+            console.log('❌ Cannot generate VN speeches: missing text or beat is silent');
+            return;
+        }
+
+        // Mark as generating
+        setBeats(prev => prev.map(b =>
+            b.id === beatId ? { ...b, isGeneratingVNSpeeches: true } : b
+        ));
+
+        try {
+            console.log(`🎭 Generating VN speeches for beat "${beat.text.slice(0, 40)}..."`);
+
+            const result = await GeminiService.generateVNSpeeches(
+                beat.id,
+                beat.text,
+                beat.characters || []
+            );
+
+            setBeats(prev => prev.map(b =>
+                b.id === beatId ? {
+                    ...b,
+                    vnSpeeches: result.vnSpeeches,
+                    isGeneratingVNSpeeches: false
+                } : b
+            ));
+
+            console.log(`✅ Generated ${result.vnSpeeches.length} VN speeches`);
+
+        } catch (e: any) {
+            console.error(`Failed to generate VN speeches:`, e);
+            setBeats(prev => prev.map(b =>
+                b.id === beatId ? { ...b, isGeneratingVNSpeeches: false } : b
+            ));
+            setError(e?.message || 'VN speech generation failed');
+        }
+    };
+
+    // Generate VN speeches for selected number of beats
+    const handleGenerateAllVNSpeeches = async () => {
+        const beatsWithText = beats.filter(b => b.text && !b.isSilent);
+
+        if (beatsWithText.length === 0) {
+            setError('No beats with dialogue to generate VN speeches for');
+            return;
+        }
+
+        // Limit to the selected number
+        const beatsToProcess = beatsWithText.slice(0, panelsToGenerate);
+
+        setIsGeneratingPanels(true);
+        console.log(`🎭 Generating VN speeches for ${beatsToProcess.length} beats...`);
+
+        for (let i = 0; i < beatsToProcess.length; i++) {
+            const beat = beatsToProcess[i];
+            setPanelGenProgress(`Generating speeches ${i + 1}/${beatsToProcess.length}...`);
+            await handleGenerateVNSpeeches(beat.id);
+        }
+
+        setIsGeneratingPanels(false);
+        setPanelGenProgress('');
+        console.log('✅ VN speeches generated');
+    };
+
     // Convert beats to segments for export (includes generated images)
     const handleExportToStoryboard = () => {
         const segments: StorySegment[] = beats.map(beat => ({
@@ -522,7 +841,8 @@ Mood/Atmosphere: ${beat.analysisReasoning}`;
             type: SegmentType.MAIN,
             selectedGridIndices: beat.imageUrl ? [0] : [],
             generatedImageUrls: beat.imageUrl ? [beat.imageUrl] : [],
-            masterGridImageUrl: beat.imageUrl
+            masterGridImageUrl: beat.imageUrl,
+            vnSpeeches: beat.vnSpeeches
         }));
 
         onSegmentsReady?.(segments);
@@ -542,10 +862,15 @@ Mood/Atmosphere: ${beat.analysisReasoning}`;
             const zip = new JSZip();
 
             // Create beats data without the base64 images (we'll store them separately)
+            // Speech bubbles, text panels, and VN speeches are preserved in the beat data
             const beatsData = beats.map((beat, idx) => ({
                 ...beat,
                 imageUrl: beat.imageUrl ? `images/beat_${idx + 1}.png` : undefined,
-                isGenerating: false
+                isGenerating: false,
+                isGeneratingSpeechBubbles: false,
+                isGeneratingTextPanels: false,
+                isGeneratingVNSpeeches: false,
+                // speechBubbles, textPanels, and vnSpeeches arrays are preserved automatically from spread
             }));
 
             // Create characters data with reference to sheet images
@@ -556,14 +881,28 @@ Mood/Atmosphere: ${beat.analysisReasoning}`;
                     : undefined
             }));
 
+            // Count speech bubbles, text panels, and VN speeches
+            const beatsWithBubbles = beats.filter(b => b.speechBubbles && b.speechBubbles.length > 0).length;
+            const totalBubbles = beats.reduce((sum, b) => sum + (b.speechBubbles?.length || 0), 0);
+            const beatsWithPanels = beats.filter(b => b.textPanels && b.textPanels.length > 0).length;
+            const totalPanels = beats.reduce((sum, b) => sum + (b.textPanels?.length || 0), 0);
+            const beatsWithVNSpeeches = beats.filter(b => b.vnSpeeches && b.vnSpeeches.length > 0).length;
+            const totalVNSpeeches = beats.reduce((sum, b) => sum + (b.vnSpeeches?.length || 0), 0);
+
             // Add metadata
             const metadata = {
-                version: '1.1', // Updated version for character support
+                version: '1.4', // Updated version for VN speeches support
                 exportDate: new Date().toISOString(),
                 sourceLanguage,
                 inputText,
                 totalBeats: beats.length,
                 beatsWithImages: beatsWithImages,
+                beatsWithSpeechBubbles: beatsWithBubbles,
+                totalSpeechBubbles: totalBubbles,
+                beatsWithTextPanels: beatsWithPanels,
+                totalTextPanels: totalPanels,
+                beatsWithVNSpeeches: beatsWithVNSpeeches,
+                totalVNSpeeches: totalVNSpeeches,
                 totalCharacters: extractedCharacters.length,
                 charactersWithSheets: characterSheets.length
             };
@@ -607,7 +946,11 @@ Mood/Atmosphere: ${beat.analysisReasoning}`;
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
 
-            console.log('✅ ZIP exported successfully (with characters)');
+            console.log(`✅ ZIP exported successfully:
+- ${beats.length} beats
+- ${beatsWithImages} images
+- ${beatsWithBubbles} beats with speech bubbles (${totalBubbles} total bubbles)
+- ${characterSheets.length} character sheets`);
         } catch (e: any) {
             console.error('Export failed:', e);
             setError(e?.message || 'Export failed');
@@ -704,7 +1047,14 @@ Mood/Atmosphere: ${beat.analysisReasoning}`;
                 setSelectedBeatId(importedBeats[0].id);
             }
 
-            console.log(`✅ Imported ${importedBeats.length} beats from ZIP`);
+            // Count imported speech bubbles
+            const importedBubbles = importedBeats.filter(b => b.speechBubbles && b.speechBubbles.length > 0).length;
+            const totalImportedBubbles = importedBeats.reduce((sum, b) => sum + (b.speechBubbles?.length || 0), 0);
+
+            console.log(`✅ Imported ${importedBeats.length} beats from ZIP:
+- ${importedBeats.filter(b => b.imageUrl).length} with images
+- ${importedBubbles} with speech bubbles (${totalImportedBubbles} total bubbles)
+- ${importedCharacters.length} characters, ${importedSheets.length} sheets`);
         } catch (e: any) {
             console.error('Import failed:', e);
             setError(e?.message || 'Import failed');
@@ -772,6 +1122,22 @@ Mood/Atmosphere: ${beat.analysisReasoning}`;
                         </div>
                     )}
 
+                    {/* Speech bubble generation progress */}
+                    {isGeneratingBubbles && bubbleGenProgress && (
+                        <div className="flex items-center gap-2 px-3 py-1.5 bg-pink-500/20 border border-pink-500/30 rounded-lg">
+                            <Loader2 className="w-4 h-4 animate-spin text-pink-400" />
+                            <span className="text-xs text-pink-300 font-medium">{bubbleGenProgress}</span>
+                        </div>
+                    )}
+
+                    {/* Text panel generation progress */}
+                    {isGeneratingPanels && panelGenProgress && (
+                        <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/20 border border-emerald-500/30 rounded-lg">
+                            <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+                            <span className="text-xs text-emerald-300 font-medium">{panelGenProgress}</span>
+                        </div>
+                    )}
+
                     {/* Character count badge */}
                     {characterSheets.length > 0 && (
                         <span className="text-xs bg-violet-500/20 text-violet-300 px-3 py-1.5 rounded-lg border border-violet-500/30 flex items-center gap-1">
@@ -784,6 +1150,13 @@ Mood/Atmosphere: ${beat.analysisReasoning}`;
                     {beats.length > 0 && beatsWithImages > 0 && (
                         <span className="text-xs bg-cyan-500/20 text-cyan-300 px-3 py-1.5 rounded-lg border border-cyan-500/30">
                             {beatsWithImages}/{beats.length} images
+                        </span>
+                    )}
+
+                    {/* VN Speeches count badge */}
+                    {beats.length > 0 && beats.filter(b => b.vnSpeeches && b.vnSpeeches.length > 0).length > 0 && (
+                        <span className="text-xs bg-amber-500/20 text-amber-300 px-3 py-1.5 rounded-lg border border-amber-500/30">
+                            {beats.filter(b => b.vnSpeeches && b.vnSpeeches.length > 0).length}/{beats.length} VN speeches
                         </span>
                     )}
 
@@ -865,6 +1238,78 @@ Mood/Atmosphere: ${beat.analysisReasoning}`;
                         </div>
                     )}
 
+                    {/* Generate Speech Bubbles Button with Selector */}
+                    {beatsWithImages > 0 && (
+                        <div className="flex items-center gap-1">
+                            <select
+                                value={bubblesToGenerate}
+                                onChange={(e) => setBubblesToGenerate(parseInt(e.target.value))}
+                                disabled={isGeneratingBubbles}
+                                className="h-10 px-2 bg-slate-800 border border-slate-600 rounded-l-lg text-sm text-pink-300 focus:ring-2 focus:ring-pink-500 focus:border-pink-500 outline-none cursor-pointer disabled:opacity-50"
+                            >
+                                <option value={1}>1 bubble</option>
+                                <option value={5}>5 bubbles</option>
+                                <option value={10}>10 bubbles</option>
+                                <option value={beats.filter(b => b.imageUrl && b.text && !b.isSilent).length}>
+                                    All ({beats.filter(b => b.imageUrl && b.text && !b.isSilent).length})
+                                </option>
+                            </select>
+                            <button
+                                onClick={handleGenerateAllSpeechBubbles}
+                                disabled={isGeneratingBubbles}
+                                className="px-4 py-2 bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-500 hover:to-rose-500 disabled:from-slate-700 disabled:to-slate-700 text-white rounded-r-lg text-sm font-bold flex items-center gap-2 transition-all h-10"
+                            >
+                                {isGeneratingBubbles ? (
+                                    <>
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                        Generating...
+                                    </>
+                                ) : (
+                                    <>
+                                        <MessageSquare className="w-4 h-4" />
+                                        Add Bubbles
+                                    </>
+                                )}
+                            </button>
+                        </div>
+                    )}
+
+                    {/* Generate VN Speeches Button (Visual Novel style) */}
+                    {beats.filter(b => b.text && !b.isSilent).length > 0 && (
+                        <div className="flex items-center gap-1">
+                            <select
+                                value={panelsToGenerate}
+                                onChange={(e) => setPanelsToGenerate(parseInt(e.target.value))}
+                                disabled={isGeneratingPanels}
+                                className="h-10 px-2 bg-slate-800 border border-slate-600 rounded-l-lg text-sm text-amber-300 focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none cursor-pointer disabled:opacity-50"
+                            >
+                                <option value={1}>1 beat</option>
+                                <option value={5}>5 beats</option>
+                                <option value={10}>10 beats</option>
+                                <option value={beats.filter(b => b.text && !b.isSilent).length}>
+                                    All ({beats.filter(b => b.text && !b.isSilent).length})
+                                </option>
+                            </select>
+                            <button
+                                onClick={handleGenerateAllVNSpeeches}
+                                disabled={isGeneratingPanels}
+                                className="px-4 py-2 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 disabled:from-slate-700 disabled:to-slate-700 text-white rounded-r-lg text-sm font-bold flex items-center gap-2 transition-all h-10"
+                            >
+                                {isGeneratingPanels ? (
+                                    <>
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                        Generating...
+                                    </>
+                                ) : (
+                                    <>
+                                        <MessageSquare className="w-4 h-4" />
+                                        VN Speeches
+                                    </>
+                                )}
+                            </button>
+                        </div>
+                    )}
+
                     {/* Download ZIP Button */}
                     {beats.length > 0 && (
                         <button
@@ -883,6 +1328,17 @@ Mood/Atmosphere: ${beat.analysisReasoning}`;
                                     Download ZIP
                                 </>
                             )}
+                        </button>
+                    )}
+
+                    {/* Save to Library Button */}
+                    {beats.length > 0 && (
+                        <button
+                            onClick={() => setSaveDialogOpen(true)}
+                            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-bold flex items-center gap-2 transition-all border border-indigo-500"
+                        >
+                            <Save className="w-4 h-4" />
+                            Save to Library
                         </button>
                     )}
 
@@ -980,6 +1436,79 @@ Mood/Atmosphere: ${beat.analysisReasoning}`;
                         <p className="text-[10px] text-slate-600 mt-2 text-center">
                             AI will segment text, detect characters, track clothing, and generate prompts
                         </p>
+                    </div>
+
+                    {/* Story Library Section */}
+                    <div className="p-3 border-b border-slate-800 bg-indigo-500/5">
+                        <div className="flex items-center justify-between mb-2">
+                            <button
+                                onClick={() => setShowLibrary(!showLibrary)}
+                                className="text-xs font-bold text-indigo-400 uppercase tracking-wider flex items-center gap-1 hover:text-indigo-300 transition-colors"
+                            >
+                                <Library className="w-3 h-3" />
+                                Story Library ({savedStories.length})
+                            </button>
+                            {savedStories.length > 0 && (
+                                <span className="text-[10px] text-emerald-400">{savedStories.length} saved</span>
+                            )}
+                        </div>
+
+                        {showLibrary && (
+                            <>
+                                {savedStories.length === 0 ? (
+                                    <div className="text-center py-4 text-slate-500">
+                                        <Library className="w-8 h-8 mx-auto mb-2 opacity-20" />
+                                        <p className="text-[10px]">No saved stories yet</p>
+                                        <p className="text-[9px] mt-1">Create beats and click "Save to Library"</p>
+                                    </div>
+                                ) : (
+                                    <div className="space-y-2 max-h-48 overflow-y-auto">
+                                        {savedStories.map(story => (
+                                            <div
+                                                key={story.id}
+                                                className="bg-slate-800/50 rounded-lg p-2 border border-slate-700/50 hover:border-indigo-500/30 transition-colors"
+                                            >
+                                                <div className="flex items-start justify-between gap-2">
+                                                    <div className="flex-1 min-w-0">
+                                                        <h4 className="text-xs font-bold text-white truncate">{story.name}</h4>
+                                                        <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                                            <span className="text-[9px] text-slate-500 flex items-center gap-1">
+                                                                <FileText className="w-2.5 h-2.5" />
+                                                                {story.beatCount} beats
+                                                            </span>
+                                                            <span className="text-[9px] text-slate-500 flex items-center gap-1">
+                                                                <ImageIcon className="w-2.5 h-2.5" />
+                                                                {story.imageCount} images
+                                                            </span>
+                                                            <span className="text-[9px] text-slate-500 flex items-center gap-1">
+                                                                <Clock className="w-2.5 h-2.5" />
+                                                                {new Date(story.dateSaved).toLocaleDateString()}
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex flex-col gap-1">
+                                                        <button
+                                                            onClick={() => handleLoadFromLibrary(story.id)}
+                                                            className="p-1.5 bg-indigo-500/20 hover:bg-indigo-500/30 rounded-lg transition-colors"
+                                                            title="Load story"
+                                                        >
+                                                            <Upload className="w-3 h-3 text-indigo-400 rotate-180" />
+                                                        </button>
+                                                        <button
+                                                            onClick={() => handleDeleteFromLibrary(story.id)}
+                                                            className="p-1.5 hover:bg-red-500/20 rounded-lg transition-colors"
+                                                            title="Delete story"
+                                                        >
+                                                            <Trash2 className="w-3 h-3 text-red-400" />
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </>
+                        )}
                     </div>
 
                     {/* Character Sheets Section - Always show if extracting or has characters */}
@@ -1219,6 +1748,14 @@ Mood/Atmosphere: ${beat.analysisReasoning}`;
                                             </div>
                                         </div>
 
+                                        {/* Text Panels BEFORE image (Webtoon-style) */}
+                                        {beat.textPanels && beat.textPanels.length > 0 && (
+                                            <TextPanelRenderer
+                                                panels={beat.textPanels}
+                                                position="before"
+                                            />
+                                        )}
+
                                         {/* Generated Image (if exists) */}
                                         {beat.imageUrl && (
                                             <div className="relative w-full aspect-[9/16] bg-black group/image">
@@ -1227,10 +1764,20 @@ Mood/Atmosphere: ${beat.analysisReasoning}`;
                                                     alt={`Beat ${idx + 1}`}
                                                     className="w-full h-full object-cover"
                                                 />
+
+                                                {/* Speech Bubbles Overlay - ONLY if no text panels */}
+                                                {(!beat.textPanels || beat.textPanels.length === 0) && beat.speechBubbles && beat.speechBubbles.length > 0 && (
+                                                    <SpeechBubbleRenderer
+                                                        bubbles={beat.speechBubbles}
+                                                        imageWidth={384} // width of aspect-[9/16] container
+                                                        imageHeight={682} // calculated height
+                                                    />
+                                                )}
+
                                                 <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
 
                                                 {/* Regenerate overlay button */}
-                                                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/image:opacity-100 transition-opacity bg-black/40">
+                                                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 opacity-0 group-hover/image:opacity-100 transition-opacity bg-black/40">
                                                     <button
                                                         onClick={(e) => {
                                                             e.stopPropagation();
@@ -1242,6 +1789,28 @@ Mood/Atmosphere: ${beat.analysisReasoning}`;
                                                         <RefreshCw className="w-4 h-4" />
                                                         Regenerate
                                                     </button>
+                                                    {beat.text && !beat.isSilent && (
+                                                        <button
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                handleGenerateVNSpeeches(beat.id);
+                                                            }}
+                                                            disabled={beat.isGeneratingVNSpeeches}
+                                                            className="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:bg-slate-700 text-white rounded-lg text-sm font-bold flex items-center gap-2 transition-all shadow-lg"
+                                                        >
+                                                            {beat.isGeneratingVNSpeeches ? (
+                                                                <>
+                                                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                                                    Generating...
+                                                                </>
+                                                            ) : (
+                                                                <>
+                                                                    <MessageSquare className="w-4 h-4" />
+                                                                    {beat.vnSpeeches && beat.vnSpeeches.length > 0 ? 'Update' : 'Add'} VN Speeches
+                                                                </>
+                                                            )}
+                                                        </button>
+                                                    )}
                                                 </div>
                                             </div>
                                         )}
@@ -1252,6 +1821,14 @@ Mood/Atmosphere: ${beat.analysisReasoning}`;
                                                 <Loader2 className="w-8 h-8 animate-spin text-cyan-400" />
                                                 <span className="text-xs text-cyan-300 font-medium">Generating...</span>
                                             </div>
+                                        )}
+
+                                        {/* Text Panels AFTER image (Webtoon-style) */}
+                                        {beat.textPanels && beat.textPanels.length > 0 && (
+                                            <TextPanelRenderer
+                                                panels={beat.textPanels}
+                                                position="after"
+                                            />
                                         )}
 
                                         {/* Beat Content */}
@@ -1381,6 +1958,15 @@ Mood/Atmosphere: ${beat.analysisReasoning}`;
                                             alt={`Beat ${selectedBeat.beatIndex + 1}`}
                                             className="w-full h-full object-cover"
                                         />
+
+                                        {/* Speech Bubbles Overlay */}
+                                        {selectedBeat.speechBubbles && selectedBeat.speechBubbles.length > 0 && (
+                                            <SpeechBubbleRenderer
+                                                bubbles={selectedBeat.speechBubbles}
+                                                imageWidth={384}
+                                                imageHeight={682}
+                                            />
+                                        )}
                                     </div>
                                 )}
 
@@ -1407,6 +1993,32 @@ Mood/Atmosphere: ${beat.analysisReasoning}`;
                                         </>
                                     )}
                                 </button>
+
+                                {/* Generate Speech Bubbles Button */}
+                                {selectedBeat.imageUrl && selectedBeat.text && !selectedBeat.isSilent && (
+                                    <button
+                                        onClick={() => handleGenerateSpeechBubbles(selectedBeat.id)}
+                                        disabled={selectedBeat.isGeneratingSpeechBubbles}
+                                        className="w-full py-3 mb-3 bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-500 hover:to-rose-500 disabled:from-slate-700 disabled:to-slate-700 text-white rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition-all"
+                                    >
+                                        {selectedBeat.isGeneratingSpeechBubbles ? (
+                                            <>
+                                                <Loader2 className="w-4 h-4 animate-spin" />
+                                                Generating...
+                                            </>
+                                        ) : selectedBeat.speechBubbles && selectedBeat.speechBubbles.length > 0 ? (
+                                            <>
+                                                <MessageSquare className="w-4 h-4" />
+                                                Update Speech Bubbles ({selectedBeat.speechBubbles.length})
+                                            </>
+                                        ) : (
+                                            <>
+                                                <MessageSquare className="w-4 h-4" />
+                                                Add Speech Bubbles
+                                            </>
+                                        )}
+                                    </button>
+                                )}
 
                                 {/* Silent toggle */}
                                 <label className="flex items-center gap-3 p-3 bg-slate-800/50 rounded-lg cursor-pointer">
@@ -1569,14 +2181,95 @@ Mood/Atmosphere: ${beat.analysisReasoning}`;
                 </div>
             </div>
 
-            {/* Story Player */}
+            {/* Story Player - Visual Novel Style */}
             {showPlayer && beatsAsSegments.length > 0 && (
-                <SlideshowPlayer
+                <WebtoonReader
                     segments={beatsAsSegments}
                     onClose={() => setShowPlayer(false)}
                     onPlayAudio={async () => {}} // No audio in BeatMaker
                     onStopAudio={() => {}}
                 />
+            )}
+
+            {/* Save to Library Dialog */}
+            {saveDialogOpen && (
+                <div className="fixed inset-0 z-[20000] flex items-center justify-center bg-black/80 backdrop-blur-sm">
+                    <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 max-w-md w-full mx-4 shadow-2xl">
+                        <div className="flex items-center gap-3 mb-4">
+                            <div className="w-12 h-12 bg-indigo-500/20 rounded-xl flex items-center justify-center">
+                                <Save className="w-6 h-6 text-indigo-400" />
+                            </div>
+                            <div>
+                                <h3 className="text-xl font-bold text-white">Save to Library</h3>
+                                <p className="text-sm text-slate-400">Give your story a name</p>
+                            </div>
+                        </div>
+
+                        <div className="mb-4">
+                            <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">
+                                Story Name
+                            </label>
+                            <input
+                                type="text"
+                                value={newStoryName}
+                                onChange={(e) => setNewStoryName(e.target.value)}
+                                onKeyPress={(e) => {
+                                    if (e.key === 'Enter') {
+                                        handleSaveToLibrary();
+                                    }
+                                }}
+                                placeholder="My awesome story..."
+                                autoFocus
+                                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                            />
+                        </div>
+
+                        <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-3 mb-4">
+                            <div className="grid grid-cols-2 gap-2 text-xs">
+                                <div className="flex items-center gap-2 text-slate-400">
+                                    <FileText className="w-3 h-3 text-indigo-400" />
+                                    <span>{beats.length} beats</span>
+                                </div>
+                                <div className="flex items-center gap-2 text-slate-400">
+                                    <ImageIcon className="w-3 h-3 text-cyan-400" />
+                                    <span>{beatsWithImages} images</span>
+                                </div>
+                                {extractedCharacters.length > 0 && (
+                                    <>
+                                        <div className="flex items-center gap-2 text-slate-400">
+                                            <UserCircle className="w-3 h-3 text-violet-400" />
+                                            <span>{extractedCharacters.length} characters</span>
+                                        </div>
+                                        <div className="flex items-center gap-2 text-slate-400">
+                                            <Palette className="w-3 h-3 text-purple-400" />
+                                            <span>{characterSheets.length} sheets</span>
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        </div>
+
+                        <div className="flex gap-3">
+                            <button
+                                onClick={() => {
+                                    setSaveDialogOpen(false);
+                                    setNewStoryName('');
+                                }}
+                                className="flex-1 px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-sm font-bold transition-all"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={handleSaveToLibrary}
+                                disabled={!newStoryName.trim()}
+                                className="flex-1 px-4 py-2.5 bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 disabled:from-slate-700 disabled:to-slate-700 text-white rounded-lg text-sm font-bold transition-all flex items-center justify-center gap-2"
+                            >
+                                <Save className="w-4 h-4" />
+                                Save
+                            </button>
+                        </div>
+                    </div>
+                </div>
             )}
         </div>
     );

@@ -122,6 +122,9 @@ export interface StorySegment {
   // NEW: Store all generated translations here
   translations?: Record<string, TranslationCache>;
 
+  // VN Speeches for visual novel mode
+  vnSpeeches?: VNSpeech[];
+
   audioUrl?: string;
   audioDuration?: number;
   videoUrl?: string;
@@ -169,4 +172,114 @@ export enum ImageSize {
   K1 = "1K",
   K2 = "2K",
   K4 = "4K"
+}
+
+// Speech Bubble Types for Webtoon Dialog System
+export type BubbleType =
+  | 'speech'      // Normal dialogue
+  | 'thought'     // Internal thoughts (cloud-style)
+  | 'narration'   // Narrator text (rectangular box)
+  | 'shout'       // Loud speech (spiky bubble)
+  | 'whisper'     // Quiet speech (dashed border)
+  | 'scream';     // Very loud (jagged bubble)
+
+export type TailDirection =
+  | 'top-left'
+  | 'top-right'
+  | 'bottom-left'
+  | 'bottom-right'
+  | 'left'
+  | 'right'
+  | 'none'; // For narration boxes
+
+export interface SpeechBubble {
+  id: string;
+  speaker: string; // Character name or 'narrator'
+  text: string; // The dialogue text
+  position: {
+    x: number; // X coordinate (percentage 0-100)
+    y: number; // Y coordinate (percentage 0-100)
+  };
+  bubbleType: BubbleType;
+  tailDirection: TailDirection; // Where the bubble tail points
+  size?: {
+    width: number;  // Estimated width (percentage)
+    height: number; // Estimated height (percentage)
+  };
+  style?: {
+    backgroundColor?: string;
+    borderColor?: string;
+    textColor?: string;
+    fontSize?: number; // Relative size (0.8 = smaller, 1.2 = larger)
+  };
+  order: number; // Reading order (1, 2, 3...)
+}
+
+export interface BubbleTranslation {
+  language: string; // Language code (e.g., 'en', 'pt', 'ko', 'ja')
+  bubbles: Record<string, string>; // bubbleId -> translated text
+}
+
+export interface BeatWithBubbles {
+  beatId: string;
+  imageUrl: string;
+  speechBubbles: SpeechBubble[];
+  translations?: BubbleTranslation[]; // Translations for different languages
+  currentLanguage: string; // Active language
+}
+
+// ============================================
+// TEXT PANEL SYSTEM (Webtoon-style text boxes)
+// ============================================
+
+export type TextPanelType =
+  | 'narration'      // Narrator voice (descriptive text)
+  | 'inner_thought'  // Character's internal thoughts
+  | 'dialogue'       // Spoken dialogue
+  | 'sfx'            // Sound effects
+  | 'system';        // System messages (like [Affection: 0%])
+
+export interface TextPanel {
+  id: string;
+  beatId: string; // Which beat this panel belongs to
+  type: TextPanelType;
+  speaker?: string; // Character name (for dialogue/thoughts)
+  text: string;
+  order: number; // Reading order within the beat
+  style: {
+    backgroundColor: string; // Panel background color
+    textColor: string;
+    fontStyle: 'normal' | 'italic';
+    fontWeight: 'normal' | 'bold';
+    textAlign: 'left' | 'center' | 'right';
+  };
+  position: 'before' | 'after'; // Show before or after the image
+}
+
+export interface TextPanelTranslation {
+  language: string;
+  panels: Record<string, string>; // panelId -> translated text
+}
+
+// ============================================
+// VISUAL NOVEL SPEECH SYSTEM
+// ============================================
+
+export type VNSpeechType =
+  | 'dialogue'       // Character speaking
+  | 'narration'      // Narrator voice
+  | 'inner_thought'; // Character's internal thoughts
+
+export interface VNSpeech {
+  id: string;
+  beatId: string; // Which beat this speech belongs to
+  type: VNSpeechType;
+  speaker?: string; // Character name (for dialogue/thoughts), undefined for narration
+  text: string;
+  order: number; // Reading order within the beat (each click advances to next speech)
+}
+
+export interface VNSpeechTranslation {
+  language: string;
+  speeches: Record<string, string>; // speechId -> translated text
 }
