@@ -1,89 +1,63 @@
-
-import React, { useState, useRef, useMemo, useEffect } from 'react';
-import { Clapperboard, Play, Volume2, Grid, Camera, Loader2, Trash2, Film, Check, RefreshCw, X, Maximize2, MoreHorizontal, Download, Eye, FileText, MicOff, GitBranch, GitMerge, ChevronDown, Sparkles, Map, History, Wand2, CornerDownLeft, MapPin, MousePointerClick, PlusCircle } from 'lucide-react';
-import { StorySegment, AspectRatio, ImageSize, SegmentType, Setting } from '../types';
+import React, { useMemo, useRef, useState } from 'react';
+import { Play, Grid, Loader2, Download, ChevronDown, GitBranch, GitMerge, Image, Square, Sparkles, Focus, Zap, SplitSquareHorizontal, Eye, EyeOff } from 'lucide-react';
+import { StorySegment, SegmentType, BackgroundType } from '../types';
 import SlideshowPlayer from './SlideshowPlayer';
 // @ts-ignore
 import html2canvas from 'html2canvas';
-import { createPortal } from 'react-dom';
+
+// Background type badge styling
+const getBackgroundBadge = (bgType?: BackgroundType) => {
+  switch (bgType) {
+    case 'WHITE':
+      return { icon: Square, label: 'White', color: 'bg-slate-100 text-slate-800' };
+    case 'GRADIENT':
+      return { icon: Sparkles, label: 'Gradient', color: 'bg-purple-500/20 text-purple-300' };
+    case 'BOKEH':
+      return { icon: Focus, label: 'Bokeh', color: 'bg-blue-500/20 text-blue-300' };
+    case 'SPEEDLINES':
+      return { icon: Zap, label: 'Action', color: 'bg-orange-500/20 text-orange-300' };
+    case 'SPLIT':
+      return { icon: SplitSquareHorizontal, label: 'Split', color: 'bg-pink-500/20 text-pink-300' };
+    case 'DETAILED':
+    default:
+      return { icon: Image, label: 'Detailed', color: 'bg-emerald-500/20 text-emerald-300' };
+  }
+};
 
 interface StoryboardProps {
   segments: StorySegment[];
-  settings?: Setting[]; // Added settings prop to access authorized views
-  onGenerateScene: (segmentId: string, options: { aspectRatio: AspectRatio, imageSize: ImageSize, referenceViewUrl?: string, continuitySegmentId?: string, locationContinuityUrls?: string[] }) => void;
-  onGenerateVideo: (segmentId: string, imageIndex: number) => void;
+  onGenerateScene: (segmentId: string) => void;
   onPlayAudio: (segmentId: string, text: string) => Promise<void>;
   onStopAudio: () => void;
-  onSelectOption: (segmentId: string, optionIndex: number) => void;
-  onDeleteAudio: (segmentId: string) => void;
-  onRegeneratePrompts?: (segmentId: string, continuitySegmentId?: string) => void;
-  // NEW: Handler for single panel correction
-  onRegenerateSinglePanel?: (segmentId: string, panelIndex: number, instruction: string) => void;
 }
 
-const Storyboard: React.FC<StoryboardProps> = ({ 
-  segments, 
-  settings = [],
+const Storyboard: React.FC<StoryboardProps> = ({
+  segments,
   onGenerateScene,
   onPlayAudio,
-  onStopAudio,
-  onSelectOption,
-  onDeleteAudio,
-  onRegeneratePrompts,
-  onRegenerateSinglePanel
+  onStopAudio
 }) => {
   const [showPlayer, setShowPlayer] = useState(false);
   const [isTakingScreenshot, setIsTakingScreenshot] = useState(false);
-  const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
-  const [generatingAudioId, setGeneratingAudioId] = useState<string | null>(null);
-  
-  // State for Continuity Override (Action/Character)
-  const [selectedContinuitySegmentId, setSelectedContinuitySegmentId] = useState<string>('');
-  
-  // NEW: State for Multi-Select Location Stack
-  // Stores URLs of images selected as environmental truth
-  const [activeEnvironmentRefs, setActiveEnvironmentRefs] = useState<{url: string, label: string, type: 'asset' | 'history'}[]>([]);
-  
-  // Temporary state for the "Scene History" dropdown selector
-  const [historySelectorSceneId, setHistorySelectorSceneId] = useState<string>('');
-
-  // NEW: State for Single Panel Correction
-  const [selectedPanelIndex, setSelectedPanelIndex] = useState<number | null>(null);
-  const [correctionPrompt, setCorrectionPrompt] = useState('');
-  const [isRegeneratingPanel, setIsRegeneratingPanel] = useState(false);
-
   const storyboardContentRef = useRef<HTMLDivElement>(null);
 
-  // Reset local state when opening a new segment
-  useEffect(() => {
-      if (editingSegmentId) {
-          setSelectedPanelIndex(null);
-          setCorrectionPrompt('');
-          setIsRegeneratingPanel(false);
-          setSelectedContinuitySegmentId('');
-          setHistorySelectorSceneId('');
-          setActiveEnvironmentRefs([]);
-      }
-  }, [editingSegmentId]);
-
-  // Group consecutive branches for visualization
   const flowRows = useMemo(() => {
     const rows: { type: 'SINGLE' | 'BRANCH_GROUP', items: StorySegment[] }[] = [];
     let currentBranches: StorySegment[] = [];
 
     segments.forEach((seg) => {
-        if (seg.type === SegmentType.BRANCH) {
-            currentBranches.push(seg);
-        } else {
-            if (currentBranches.length > 0) {
-                rows.push({ type: 'BRANCH_GROUP', items: [...currentBranches] });
-                currentBranches = [];
-            }
-            rows.push({ type: 'SINGLE', items: [seg] });
+      if (seg.type === SegmentType.BRANCH) {
+        currentBranches.push(seg);
+      } else {
+        if (currentBranches.length > 0) {
+          rows.push({ type: 'BRANCH_GROUP', items: [...currentBranches] });
+          currentBranches = [];
         }
+        rows.push({ type: 'SINGLE', items: [seg] });
+      }
     });
     if (currentBranches.length > 0) {
-        rows.push({ type: 'BRANCH_GROUP', items: [...currentBranches] });
+      rows.push({ type: 'BRANCH_GROUP', items: [...currentBranches] });
     }
     return rows;
   }, [segments]);
@@ -97,140 +71,141 @@ const Storyboard: React.FC<StoryboardProps> = ({
       link.href = canvas.toDataURL("image/png");
       link.download = `manhwa-flow-${new Date().getTime()}.png`;
       link.click();
-    } finally { setIsTakingScreenshot(false); }
-  };
-
-  const handleSingleRegeneration = () => {
-      if (!editingSegmentId || selectedPanelIndex === null || !correctionPrompt.trim() || !onRegenerateSinglePanel) return;
-      
-      setIsRegeneratingPanel(true);
-      onRegenerateSinglePanel(editingSegmentId, selectedPanelIndex, correctionPrompt);
-      
-      setTimeout(() => {
-          setIsRegeneratingPanel(false);
-          setCorrectionPrompt('');
-          setSelectedPanelIndex(null); 
-      }, 3000); 
-  };
-
-  const handleAddEnvironmentRef = (url: string, label: string, type: 'asset' | 'history') => {
-      if (!url) return;
-      // Prevent duplicates
-      if (activeEnvironmentRefs.some(ref => ref.url === url)) return;
-      setActiveEnvironmentRefs(prev => [...prev, { url, label, type }]);
-  };
-
-  const handleRemoveEnvironmentRef = (url: string) => {
-      setActiveEnvironmentRefs(prev => prev.filter(ref => ref.url !== url));
-  };
-
-  const editingSegment = segments.find(s => s.id === editingSegmentId);
-  const associatedSetting = editingSegment ? settings.find(s => s.id === editingSegment.settingId) : null;
-  
-  // Get previous segments for the Continuity Dropdown
-  const previousSegmentsWithImages = useMemo(() => {
-      if (!editingSegment) return [];
-      const currentIndex = segments.findIndex(s => s.id === editingSegment.id);
-      return segments
-        .slice(0, currentIndex)
-        .filter(s => s.masterGridImageUrl)
-        .reverse(); // Show newest first
-  }, [editingSegment, segments]);
-
-  // Get images for the currently selected history scene (for browsing)
-  const historySelectorImages = useMemo(() => {
-      if (!historySelectorSceneId) return [];
-      const seg = segments.find(s => s.id === historySelectorSceneId);
-      if (!seg) return [];
-
-      const images = [];
-      if (seg.masterGridImageUrl) images.push({ url: seg.masterGridImageUrl, label: 'Master Grid' });
-      if (seg.generatedImageUrls) {
-          seg.generatedImageUrls.forEach((url, idx) => {
-             images.push({ url, label: `Panel ${idx + 1}` });
-          });
-      }
-      return images;
-  }, [historySelectorSceneId, segments]);
-
-  const handleAudioClick = async (id: string, text: string) => {
-    setGeneratingAudioId(id);
-    try { await onPlayAudio(id, text); } finally { setGeneratingAudioId(null); }
-  }
-
-  // Helper component for the Card to reuse in different layouts
-  const StoryCard = ({ segment, index }: { segment: StorySegment, index: number }) => {
-    let displayImage = null;
-    if (segment.generatedImageUrls && segment.generatedImageUrls.length > 0) {
-        displayImage = segment.generatedImageUrls[0]; 
-    } else if (segment.masterGridImageUrl) {
-        displayImage = segment.masterGridImageUrl;
+    } finally {
+      setIsTakingScreenshot(false);
     }
+  };
 
+  const getPrimaryImage = (segment: StorySegment) => {
+    const urls = segment.generatedImageUrls || [];
+    const fromGenerated = urls.find(url => url && url.trim().length > 0);
+    return fromGenerated || segment.masterGridImageUrl || null;
+  };
+
+  const StoryCard = ({ segment, index }: { segment: StorySegment, index: number }) => {
+    const [showPrompt, setShowPrompt] = useState(false);
+    const displayImage = getPrimaryImage(segment);
     const isBranch = segment.type === SegmentType.BRANCH;
     const isMerge = segment.type === SegmentType.MERGE_POINT;
     const hasChoices = segment.choices && segment.choices.length > 0;
+    const hasImage = !!displayImage;
+    const displayText = segment.text && segment.text.trim().length > 0 ? segment.text : 'Silent beat (no dialog)';
+    const isSilentBeat = !segment.text || segment.text.trim().length === 0;
+
+    // Get background type and visual prompt from first panel
+    const panel = segment.panels?.[0];
+    const bgType = panel?.backgroundType as BackgroundType;
+    const bgBadge = getBackgroundBadge(bgType);
+    const visualPrompt = panel?.visualPrompt || '';
 
     return (
-        <div className={`group relative rounded-xl overflow-hidden border transition-all shadow-lg flex flex-col w-full max-w-md mx-auto
-            ${isBranch ? 'bg-indigo-900/10 border-indigo-500/50 hover:shadow-indigo-500/20' : 
-              isMerge ? 'bg-purple-900/10 border-purple-500/50 hover:shadow-purple-500/20' : 
-              'bg-slate-900 border-slate-800 hover:border-slate-600 hover:shadow-slate-500/10'}`}>
-            
-            <div className="absolute top-2 right-2 z-10 flex gap-2">
-                {isBranch && <div className="w-6 h-6 bg-indigo-600 rounded-full flex items-center justify-center text-white shadow-lg"><GitBranch className="w-3 h-3" /></div>}
-                {isMerge && <div className="w-6 h-6 bg-purple-600 rounded-full flex items-center justify-center text-white shadow-lg"><GitMerge className="w-3 h-3" /></div>}
-                <div className="w-6 h-6 bg-white/10 backdrop-blur-md rounded-full flex items-center justify-center text-[10px] font-bold text-white border border-white/20">
-                    {index + 1}
-                </div>
-            </div>
+      <div className={`group relative rounded-xl overflow-hidden border transition-all shadow-lg flex flex-col w-full max-w-md mx-auto
+          ${isBranch ? 'bg-indigo-900/10 border-indigo-500/50 hover:shadow-indigo-500/20' :
+            isMerge ? 'bg-purple-900/10 border-purple-500/50 hover:shadow-purple-500/20' :
+            'bg-slate-900 border-slate-800 hover:border-slate-600 hover:shadow-slate-500/10'}`}>
 
-            <div 
-                onClick={() => setEditingSegmentId(segment.id)}
-                className="relative w-full aspect-[16/9] bg-black cursor-pointer overflow-hidden group-image"
-            >
-                {displayImage ? (
-                    <img src={displayImage} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" alt="Panel" />
-                ) : (
-                    <div className="w-full h-full flex flex-col items-center justify-center bg-slate-800 text-slate-500 gap-2">
-                        {segment.isGenerating ? (
-                            <Loader2 className="w-8 h-8 animate-spin text-indigo-500" />
-                        ) : (
-                            <>
-                                <Grid className="w-8 h-8 opacity-20" />
-                                <span className="text-[10px] uppercase font-bold tracking-widest opacity-50">Click to Generate</span>
-                            </>
-                        )}
-                    </div>
-                )}
-                 <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                    <div className="bg-black/60 rounded-full p-2 backdrop-blur-sm border border-white/10">
-                        <Maximize2 className="w-4 h-4 text-white" />
-                    </div>
-                 </div>
-            </div>
-
-            <div className="p-4 bg-slate-900/90 min-h-[100px] flex flex-col justify-between border-t border-white/5">
-                 <div>
-                     <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center justify-between">
-                         {segment.settingId ? `SCENE: ${segment.settingId.slice(0, 8)}...` : 'NARRATION'}
-                         {hasChoices && <span className="text-indigo-400 text-[10px] font-bold flex items-center gap-1"><GitBranch className="w-3 h-3"/> CHOICE POINT</span>}
-                     </h4>
-                     <p className="text-xs text-slate-300 font-serif leading-relaxed line-clamp-3">
-                         {segment.text}
-                     </p>
-                 </div>
-                 {hasChoices && (
-                     <div className="mt-3 flex gap-2 flex-wrap">
-                         {segment.choices?.map((c, i) => (
-                             <span key={i} className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-1 rounded border border-indigo-500/30 flex-1 text-center">
-                                 {c.text}
-                             </span>
-                         ))}
-                     </div>
-                 )}
-            </div>
+        <div className="absolute top-2 right-2 z-10 flex gap-2">
+          {/* Background Type Badge */}
+          {(() => {
+            const IconComponent = bgBadge.icon;
+            return (
+              <div className={`px-2 py-0.5 rounded-full flex items-center gap-1 text-[9px] font-bold ${bgBadge.color} border border-white/10`}>
+                <IconComponent className="w-3 h-3" />
+                {bgBadge.label}
+              </div>
+            );
+          })()}
+          {isSilentBeat && <div className="px-2 py-0.5 bg-amber-500/20 text-amber-300 rounded-full text-[9px] font-bold border border-amber-500/30">SILENT</div>}
+          {isBranch && <div className="w-6 h-6 bg-indigo-600 rounded-full flex items-center justify-center text-white shadow-lg"><GitBranch className="w-3 h-3" /></div>}
+          {isMerge && <div className="w-6 h-6 bg-purple-600 rounded-full flex items-center justify-center text-white shadow-lg"><GitMerge className="w-3 h-3" /></div>}
+          <div className="w-6 h-6 bg-white/10 backdrop-blur-md rounded-full flex items-center justify-center text-[10px] font-bold text-white border border-white/20">
+            {index + 1}
+          </div>
         </div>
+
+        <div className="relative w-full aspect-[16/9] bg-black overflow-hidden group-image">
+          {displayImage ? (
+            <img src={displayImage} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" alt="Scene preview" />
+          ) : (
+            <div className="w-full h-full flex flex-col items-center justify-center bg-slate-800 text-slate-500 gap-2">
+              {segment.isGenerating ? (
+                <Loader2 className="w-8 h-8 animate-spin text-indigo-500" />
+              ) : (
+                <>
+                  <Grid className="w-8 h-8 opacity-20" />
+                  <span className="text-[10px] uppercase font-bold tracking-widest opacity-50">No image yet</span>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="p-4 bg-slate-900/90 min-h-[120px] flex flex-col justify-between border-t border-white/5">
+          <div>
+            <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center justify-between">
+              {segment.settingId ? `SCENE: ${segment.settingId.slice(0, 8)}...` : 'NARRATION'}
+              <div className="flex items-center gap-2">
+                {hasChoices && <span className="text-indigo-400 text-[10px] font-bold flex items-center gap-1"><GitBranch className="w-3 h-3" /> CHOICE</span>}
+                {visualPrompt && (
+                  <button
+                    onClick={() => setShowPrompt(!showPrompt)}
+                    className="text-slate-500 hover:text-slate-300 transition-colors"
+                    title={showPrompt ? "Hide prompt" : "Show prompt"}
+                  >
+                    {showPrompt ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                  </button>
+                )}
+              </div>
+            </h4>
+            <p className="text-xs text-slate-300 font-serif leading-relaxed line-clamp-3">
+              {displayText}
+            </p>
+          </div>
+
+          {/* Visual Prompt Debug Info */}
+          {showPrompt && visualPrompt && (
+            <div className="mt-2 p-2 bg-slate-800/50 rounded border border-slate-700/50 space-y-1">
+              <p className="text-[10px] text-cyan-400 font-mono leading-relaxed">
+                <span className="text-slate-500">PROMPT:</span> {visualPrompt}
+              </p>
+              {panel?.cameraAngle && (
+                <p className="text-[10px] text-amber-400 font-mono">
+                  <span className="text-slate-500">CAMERA:</span> {panel.cameraAngle}
+                </p>
+              )}
+              {segment.costumeOverride && (
+                <p className="text-[10px] text-pink-400 font-mono">
+                  <span className="text-slate-500">COSTUME:</span> {segment.costumeOverride}
+                </p>
+              )}
+            </div>
+          )}
+
+          {hasChoices && (
+            <div className="mt-3 flex gap-2 flex-wrap">
+              {segment.choices?.map((c, i) => (
+                <span key={i} className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-1 rounded border border-indigo-500/30 flex-1 text-center">
+                  {c.text}
+                </span>
+              ))}
+            </div>
+          )}
+
+          <button
+            onClick={() => onGenerateScene(segment.id)}
+            disabled={segment.isGenerating}
+            className={`mt-4 flex items-center justify-center gap-2 w-full py-2 rounded-lg text-xs font-bold transition-all
+              ${segment.isGenerating
+                ? 'bg-slate-800 text-slate-500'
+                : hasImage
+                  ? 'bg-indigo-600 text-white hover:bg-indigo-500'
+                  : 'bg-emerald-600 text-white hover:bg-emerald-500'}`}
+          >
+            {segment.isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Grid className="w-4 h-4" />}
+            {segment.isGenerating ? 'Generating...' : hasImage ? 'Regenerate Scene' : 'Generate Scene'}
+          </button>
+        </div>
+      </div>
     );
   };
 
@@ -238,516 +213,72 @@ const Storyboard: React.FC<StoryboardProps> = ({
     <div className="space-y-6">
       <div className="flex justify-between items-center sticky top-0 z-10 bg-[#0f172a]/95 backdrop-blur py-4 border-b border-slate-800">
         <div>
-           <h2 className="text-2xl font-serif italic text-white">Narrative Flow</h2>
-           <p className="text-xs text-slate-500 uppercase tracking-widest">{segments.length} INTERACTIVE NODES</p>
+          <h2 className="text-2xl font-serif italic text-white">Narrative Flow</h2>
+          <p className="text-xs text-slate-500 uppercase tracking-widest">{segments.length} SCENES</p>
         </div>
         <div className="flex gap-4 items-center">
-             <button onClick={handleScreenshot} disabled={isTakingScreenshot} className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-2 rounded-full flex items-center gap-2 text-xs font-bold transition-all border border-slate-700">
-               {isTakingScreenshot ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-               DOWNLOAD FLOW
-             </button>
-             <button onClick={() => setShowPlayer(true)} className="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-2 rounded-full flex items-center gap-2 font-bold text-xs transition-all shadow-lg shadow-emerald-500/25 ring-2 ring-emerald-500/20">
-               <Play className="w-4 h-4 fill-current" /> PLAY EXPERIENCE
-             </button>
+          <button onClick={handleScreenshot} disabled={isTakingScreenshot} className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-2 rounded-full flex items-center gap-2 text-xs font-bold transition-all border border-slate-700">
+            {isTakingScreenshot ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+            DOWNLOAD FLOW
+          </button>
+          <button onClick={() => setShowPlayer(true)} className="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-2 rounded-full flex items-center gap-2 font-bold text-xs transition-all shadow-lg shadow-emerald-500/25 ring-2 ring-emerald-500/20">
+            <Play className="w-4 h-4 fill-current" /> PLAY EXPERIENCE
+          </button>
         </div>
       </div>
 
       <div ref={storyboardContentRef} className="pb-32 px-4 flex flex-col items-center relative">
-        {/* Central timeline line */}
         <div className="absolute top-0 bottom-0 left-1/2 w-0.5 bg-slate-800 -z-10 transform -translate-x-1/2"></div>
 
         {flowRows.map((row, rowIndex) => {
-            if (row.type === 'SINGLE') {
-                const segment = row.items[0];
-                const index = segments.findIndex(s => s.id === segment.id);
-                return (
-                    <div key={segment.id} className="w-full flex flex-col items-center">
-                        {/* Vertical Connector Input */}
-                        {rowIndex > 0 && <div className="h-8 w-0.5 bg-slate-700"></div>}
-                        
-                        <div className="relative z-0 my-2">
-                             <StoryCard segment={segment} index={index} />
-                             {/* Arrow Down Indicator */}
-                             {rowIndex < flowRows.length - 1 && (
-                                <div className="absolute -bottom-8 left-1/2 transform -translate-x-1/2 text-slate-600">
-                                    <ChevronDown className="w-6 h-6" />
-                                </div>
-                             )}
-                        </div>
+          if (row.type === 'SINGLE') {
+            const segment = row.items[0];
+            const index = segments.findIndex(s => s.id === segment.id);
+            return (
+              <div key={segment.id} className="w-full flex flex-col items-center">
+                {rowIndex > 0 && <div className="h-8 w-0.5 bg-slate-700"></div>}
+                <div className="relative z-0 my-2">
+                  <StoryCard segment={segment} index={index} />
+                  {rowIndex < flowRows.length - 1 && (
+                    <div className="absolute -bottom-8 left-1/2 transform -translate-x-1/2 text-slate-600">
+                      <ChevronDown className="w-6 h-6" />
                     </div>
-                );
-            } else {
-                // BRANCH GROUP
-                return (
-                    <div key={`group-${rowIndex}`} className="w-full flex flex-col items-center my-4">
-                        {/* Branch Split Visuals */}
-                        <div className="relative w-full max-w-4xl h-8 mb-4">
-                            {/* Vertical line coming from top */}
-                            <div className="absolute left-1/2 -top-4 bottom-0 w-0.5 bg-slate-700 transform -translate-x-1/2"></div>
-                            {/* Horizontal bar connecting branches */}
-                            <div className="absolute bottom-1/2 left-[25%] right-[25%] h-0.5 bg-slate-700 border-t border-indigo-900/50"></div>
-                            {/* Vertical droppers to cards */}
-                            <div className="absolute left-[25%] top-1/2 bottom-[-16px] w-0.5 bg-slate-700"></div>
-                            <div className="absolute right-[25%] top-1/2 bottom-[-16px] w-0.5 bg-slate-700"></div>
-                        </div>
+                  )}
+                </div>
+              </div>
+            );
+          }
 
-                        <div className="flex gap-8 justify-center w-full max-w-6xl">
-                            {row.items.map((segment) => {
-                                const index = segments.findIndex(s => s.id === segment.id);
-                                return (
-                                    <div key={segment.id} className="flex-1 flex justify-center min-w-[300px]">
-                                        <StoryCard segment={segment} index={index} />
-                                    </div>
-                                )
-                            })}
-                        </div>
-                        
-                        {/* Merge Connector Lines */}
-                        <div className="relative w-full max-w-4xl h-8 mt-4">
-                             {/* Vertical risers from cards */}
-                            <div className="absolute left-[25%] top-[-16px] bottom-1/2 w-0.5 bg-slate-700"></div>
-                            <div className="absolute right-[25%] top-[-16px] bottom-1/2 w-0.5 bg-slate-700"></div>
-                             {/* Horizontal merge bar */}
-                            <div className="absolute top-1/2 left-[25%] right-[25%] h-0.5 bg-slate-700"></div>
-                             {/* Vertical line going down to next node */}
-                            <div className="absolute left-1/2 top-1/2 bottom-0 w-0.5 bg-slate-700 transform -translate-x-1/2"></div>
-                        </div>
+          return (
+            <div key={`group-${rowIndex}`} className="w-full flex flex-col items-center my-4">
+              <div className="relative w-full max-w-4xl h-8 mb-4">
+                <div className="absolute left-1/2 -top-4 bottom-0 w-0.5 bg-slate-700 transform -translate-x-1/2"></div>
+                <div className="absolute bottom-1/2 left-[25%] right-[25%] h-0.5 bg-slate-700 border-t border-indigo-900/50"></div>
+                <div className="absolute left-[25%] top-1/2 bottom-[-16px] w-0.5 bg-slate-700"></div>
+                <div className="absolute right-[25%] top-1/2 bottom-[-16px] w-0.5 bg-slate-700"></div>
+              </div>
+
+              <div className="flex gap-8 justify-center w-full max-w-6xl">
+                {row.items.map((segment) => {
+                  const index = segments.findIndex(s => s.id === segment.id);
+                  return (
+                    <div key={segment.id} className="flex-1 flex justify-center min-w-[300px]">
+                      <StoryCard segment={segment} index={index} />
                     </div>
-                );
-            }
+                  );
+                })}
+              </div>
+
+              <div className="relative w-full max-w-4xl h-8 mt-4">
+                <div className="absolute left-[25%] top-[-16px] bottom-1/2 w-0.5 bg-slate-700"></div>
+                <div className="absolute right-[25%] top-[-16px] bottom-1/2 w-0.5 bg-slate-700"></div>
+                <div className="absolute top-1/2 left-[25%] right-[25%] h-0.5 bg-slate-700"></div>
+                <div className="absolute left-1/2 top-1/2 bottom-0 w-0.5 bg-slate-700 transform -translate-x-1/2"></div>
+              </div>
+            </div>
+          );
         })}
       </div>
-
-      {editingSegment && (
-        createPortal(
-            <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" onClick={() => setEditingSegmentId(null)}>
-                <div className="bg-slate-900 w-full max-w-5xl max-h-[90vh] rounded-2xl border border-slate-700 shadow-2xl overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
-                    
-                    <div className="flex justify-between items-center p-6 border-b border-slate-800 bg-slate-950">
-                        <div>
-                            <span className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Interactive Editor</span>
-                            <h3 className="text-xl font-bold text-white">Scene {segments.findIndex(s => s.id === editingSegmentId) + 1} Breakdown</h3>
-                        </div>
-                        <button onClick={() => setEditingSegmentId(null)} className="p-2 hover:bg-slate-800 rounded-full transition-colors text-slate-400 hover:text-white">
-                            <X className="w-6 h-6" />
-                        </button>
-                    </div>
-
-                    <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 lg:grid-cols-2 gap-8">
-                        
-                        <div className="space-y-6">
-                            <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700/50">
-                                <h4 className="text-sm font-bold text-white mb-4 flex items-center justify-between">
-                                    <span className="flex items-center gap-2"><Grid className="w-4 h-4 text-indigo-400" /> Master Grid (Select to Edit)</span>
-                                    
-                                    <div className="flex items-center gap-2">
-                                        {editingSegment.masterGridImageUrl && !editingSegment.isGenerating && (
-                                            <button 
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    onGenerateScene(editingSegment.id, { 
-                                                        aspectRatio: AspectRatio.MOBILE, 
-                                                        imageSize: ImageSize.K1,
-                                                        continuitySegmentId: selectedContinuitySegmentId || undefined,
-                                                        locationContinuityUrls: activeEnvironmentRefs.map(r => r.url) // Pass multiple refs
-                                                    });
-                                                }}
-                                                className="text-[10px] bg-slate-700 hover:bg-indigo-600 text-white px-3 py-1.5 rounded-full font-bold flex items-center gap-1 transition-colors shadow-sm border border-slate-600 hover:border-indigo-500"
-                                                title="Regenerate Full Grid (All 4 Panels)"
-                                            >
-                                                <RefreshCw className="w-3 h-3" />
-                                                Regen All
-                                            </button>
-                                        )}
-
-                                        {selectedPanelIndex !== null && (
-                                            <span className="text-[10px] bg-indigo-500 text-white px-2 py-0.5 rounded animate-pulse">
-                                                Editing #{selectedPanelIndex + 1}
-                                            </span>
-                                        )}
-                                    </div>
-                                </h4>
-                                
-                                <div className="aspect-[9/16] bg-black rounded-lg overflow-hidden relative border border-slate-700 shadow-inner group">
-                                     {editingSegment.generatedImageUrls && editingSegment.generatedImageUrls.length === 4 ? (
-                                         // RENDER 2x2 GRID OF INDIVIDUAL IMAGES
-                                         <div className="grid grid-cols-2 grid-rows-2 w-full h-full">
-                                             {editingSegment.generatedImageUrls.map((imgUrl, idx) => (
-                                                 <div 
-                                                    key={idx}
-                                                    onClick={() => setSelectedPanelIndex(idx)}
-                                                    className={`relative w-full h-full cursor-pointer transition-all border-2 
-                                                        ${selectedPanelIndex === idx ? 'border-indigo-500 z-10 scale-[1.02] shadow-2xl' : 'border-transparent hover:border-white/30'}
-                                                    `}
-                                                 >
-                                                     <img src={imgUrl} className="w-full h-full object-cover" />
-                                                     <div className="absolute bottom-2 left-2 bg-black/60 text-white/90 px-2 py-0.5 rounded text-[10px] font-mono backdrop-blur-sm border border-white/10 pointer-events-none">
-                                                         #{idx + 1}
-                                                     </div>
-                                                     {isRegeneratingPanel && selectedPanelIndex === idx && (
-                                                         <div className="absolute inset-0 bg-black/70 flex flex-col items-center justify-center backdrop-blur-sm">
-                                                             <Loader2 className="w-6 h-6 text-indigo-400 animate-spin" />
-                                                         </div>
-                                                     )}
-                                                 </div>
-                                             ))}
-                                         </div>
-                                     ) : editingSegment.masterGridImageUrl ? (
-                                         // FALLBACK TO MASTER GRID IF CROPS MISSING (Should be rare)
-                                         <>
-                                            <img src={editingSegment.masterGridImageUrl} className={`w-full h-full object-contain transition-all duration-500 ${editingSegment.isGenerating ? 'opacity-30 blur-sm scale-105' : ''}`} />
-                                            {/* Static overlay for beats */}
-                                            <div className="absolute inset-0 grid grid-cols-2 grid-rows-2 pointer-events-none">
-                                                {Array.from({ length: 4 }).map((_, i) => (
-                                                    <div key={i} className="relative border border-white/10">
-                                                        <div className="absolute bottom-2 left-2 bg-black/60 text-white/90 px-2 py-0.5 rounded text-[10px] font-mono backdrop-blur-sm border border-white/10">
-                                                            Beat #{i + 1}
-                                                        </div>
-                                                    </div>
-                                                ))}
-                                            </div>
-                                         </>
-                                     ) : (
-                                         <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 p-8 text-center">
-                                             <Film className="w-12 h-12 mb-4 opacity-20" />
-                                             <p className="text-sm mb-4">Generate 4 distinct beats for this segment.</p>
-                                             <button 
-                                                onClick={() => onGenerateScene(editingSegment.id, { 
-                                                    aspectRatio: AspectRatio.MOBILE, 
-                                                    imageSize: ImageSize.K1,
-                                                    continuitySegmentId: selectedContinuitySegmentId || undefined,
-                                                    locationContinuityUrls: activeEnvironmentRefs.map(r => r.url)
-                                                })}
-                                                disabled={editingSegment.isGenerating}
-                                                className="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2 rounded-lg font-bold text-sm transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                                             >
-                                                 {editingSegment.isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-                                                 {editingSegment.isGenerating ? 'Generating...' : 'Generate Panels'}
-                                             </button>
-                                         </div>
-                                     )}
-
-                                     {/* Default Loading Overlay */}
-                                     {editingSegment.isGenerating && (
-                                        <div className="absolute inset-0 flex flex-col items-center justify-center z-10 bg-black/40 backdrop-blur-sm pointer-events-none">
-                                            <Loader2 className="w-10 h-10 animate-spin text-indigo-500 mb-2" />
-                                            <span className="text-xs font-bold text-indigo-400 tracking-widest uppercase animate-pulse">Regenerating Scene...</span>
-                                        </div>
-                                     )}
-                                </div>
-
-                                {/* NEW: Single Panel Correction Input */}
-                                {selectedPanelIndex !== null && (
-                                    <div className="mt-4 p-4 bg-indigo-900/20 border border-indigo-500/30 rounded-lg animate-in fade-in slide-in-from-top-2">
-                                        <div className="flex items-center justify-between mb-2">
-                                            <label className="text-xs font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-2">
-                                                <Wand2 className="w-3 h-3" />
-                                                Correction for Panel {selectedPanelIndex + 1}
-                                            </label>
-                                            <button onClick={() => setSelectedPanelIndex(null)} className="text-slate-500 hover:text-white"><X className="w-3 h-3" /></button>
-                                        </div>
-                                        <div className="flex gap-2">
-                                            <input 
-                                                type="text" 
-                                                value={correctionPrompt}
-                                                onChange={(e) => setCorrectionPrompt(e.target.value)}
-                                                onKeyDown={(e) => { if(e.key === 'Enter') handleSingleRegeneration(); }}
-                                                placeholder="E.g., 'Make her climb the stairs instead of descending'..."
-                                                className="flex-1 bg-slate-950 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:ring-2 focus:ring-indigo-500 outline-none"
-                                                autoFocus
-                                            />
-                                            <button 
-                                                onClick={handleSingleRegeneration}
-                                                disabled={!correctionPrompt.trim() || isRegeneratingPanel}
-                                                className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded font-bold text-xs flex items-center gap-2 disabled:opacity-50"
-                                            >
-                                                {isRegeneratingPanel ? <Loader2 className="w-3 h-3 animate-spin" /> : <CornerDownLeft className="w-3 h-3" />}
-                                                FIX
-                                            </button>
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-
-                        <div className="space-y-6">
-                            
-                            {/* Composition Control Panel (With Continuity Override) */}
-                            <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700/50 space-y-6">
-                                <h4 className="text-xs font-bold text-emerald-400 uppercase tracking-widest flex items-center gap-2 border-b border-slate-700/50 pb-2">
-                                    <Map className="w-4 h-4" />
-                                    Composition Control
-                                </h4>
-                                
-                                {/* 1. Background Reference - NOW MULTI-SELECT STACK */}
-                                <div className="space-y-3">
-                                    <label className="text-xs text-slate-400 font-bold block flex items-center gap-2">
-                                        1. Environment Consistency (Background)
-                                        <span className="text-[9px] bg-emerald-500/20 text-emerald-300 px-1.5 rounded uppercase">Location Truth</span>
-                                    </label>
-
-                                    {/* Active References Visualization */}
-                                    <div className="min-h-[60px] bg-slate-900 border border-slate-700 rounded-lg p-2 flex gap-2 overflow-x-auto custom-scrollbar">
-                                        {activeEnvironmentRefs.length === 0 ? (
-                                            <div className="w-full flex items-center justify-center text-[10px] text-slate-600 italic">
-                                                No reference images selected. AI will hallucinate room.
-                                            </div>
-                                        ) : (
-                                            activeEnvironmentRefs.map((ref, idx) => (
-                                                <div key={idx} className="relative shrink-0 w-14 h-14 rounded-md overflow-hidden border border-emerald-500/30 group">
-                                                    <img src={ref.url} className="w-full h-full object-cover opacity-80" />
-                                                    <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                                                        <button 
-                                                            onClick={() => handleRemoveEnvironmentRef(ref.url)}
-                                                            className="bg-red-500/80 p-1 rounded-full text-white"
-                                                        >
-                                                            <X className="w-3 h-3" />
-                                                        </button>
-                                                    </div>
-                                                    <span className="absolute bottom-0 inset-x-0 bg-black/60 text-[6px] text-white text-center truncate px-1">{ref.label}</span>
-                                                </div>
-                                            ))
-                                        )}
-                                    </div>
-
-                                    <div className="grid grid-cols-2 gap-2">
-                                        {/* Adder A: Authorized Views (Assets) */}
-                                        <div>
-                                            <select 
-                                                onChange={(e) => {
-                                                    const view = associatedSetting?.authorizedViews?.find(v => v.imageUrl === e.target.value);
-                                                    if(view) handleAddEnvironmentRef(view.imageUrl, view.name, 'asset');
-                                                    e.target.value = ""; // Reset
-                                                }}
-                                                className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-white focus:ring-2 focus:ring-emerald-500 outline-none"
-                                            >
-                                                <option value="">+ Add Asset View</option>
-                                                {associatedSetting && associatedSetting.authorizedViews && associatedSetting.authorizedViews.map(view => (
-                                                    <option key={view.id} value={view.imageUrl}>
-                                                        Asset: {view.name}
-                                                    </option>
-                                                ))}
-                                            </select>
-                                        </div>
-
-                                        {/* Adder B: Location History (Scene X) */}
-                                        <div>
-                                             <select 
-                                                value={historySelectorSceneId}
-                                                onChange={(e) => setHistorySelectorSceneId(e.target.value)}
-                                                className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-white focus:ring-2 focus:ring-emerald-500 outline-none"
-                                            >
-                                                <option value="">Browse History...</option>
-                                                {previousSegmentsWithImages.map((seg, idx) => (
-                                                    <option key={seg.id} value={seg.id}>
-                                                         Scene {segments.findIndex(s => s.id === seg.id) + 1}
-                                                    </option>
-                                                ))}
-                                            </select>
-                                        </div>
-                                    </div>
-                                    
-                                    {/* Sub-Selector for History Images */}
-                                    {historySelectorSceneId && historySelectorImages.length > 0 && (
-                                        <div className="mt-2 animate-in fade-in slide-in-from-top-2 p-2 bg-slate-800/50 rounded-lg border border-slate-700">
-                                            <div className="flex justify-between items-center mb-2">
-                                                <label className="text-[9px] text-slate-400 font-bold uppercase tracking-wider flex items-center gap-1">
-                                                    <MousePointerClick className="w-3 h-3" /> Pick Reference from Scene {segments.findIndex(s => s.id === historySelectorSceneId) + 1}
-                                                </label>
-                                                <button onClick={() => setHistorySelectorSceneId('')}><X className="w-3 h-3 text-slate-500 hover:text-white"/></button>
-                                            </div>
-                                            <div className="grid grid-cols-5 gap-2">
-                                                {historySelectorImages.map((img, idx) => {
-                                                    const isAdded = activeEnvironmentRefs.some(ref => ref.url === img.url);
-                                                    return (
-                                                        <div 
-                                                            key={idx}
-                                                            onClick={() => handleAddEnvironmentRef(img.url, `Sc${segments.findIndex(s => s.id === historySelectorSceneId) + 1}-${img.label}`, 'history')}
-                                                            className={`relative aspect-square rounded overflow-hidden cursor-pointer border transition-all group
-                                                                ${isAdded 
-                                                                    ? 'border-emerald-500 opacity-50 cursor-default' 
-                                                                    : 'border-slate-600 hover:border-emerald-400'
-                                                                }`}
-                                                        >
-                                                            <img src={img.url} className="w-full h-full object-cover" />
-                                                            {!isAdded && (
-                                                                <div className="absolute inset-0 bg-emerald-500/20 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                                                                    <PlusCircle className="w-4 h-4 text-white" />
-                                                                </div>
-                                                            )}
-                                                            {isAdded && (
-                                                                <div className="absolute inset-0 flex items-center justify-center bg-black/40">
-                                                                    <Check className="w-4 h-4 text-emerald-500" />
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    );
-                                                })}
-                                            </div>
-                                        </div>
-                                    )}
-                                    
-                                    <p className="text-[10px] text-slate-500 leading-relaxed mt-1">
-                                        Add multiple reference images to help the AI understand the room's layout from different angles.
-                                    </p>
-                                </div>
-
-                                {/* 2. Continuity Override (Character/Outfit) */}
-                                <div className="space-y-3">
-                                    <label className="text-xs text-slate-400 font-bold block flex items-center gap-2">
-                                        2. Character Continuity (Outfit/Items)
-                                        <span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-1.5 rounded uppercase">Forensic Override</span>
-                                    </label>
-                                    <div className="relative">
-                                        <select 
-                                            value={selectedContinuitySegmentId}
-                                            onChange={(e) => setSelectedContinuitySegmentId(e.target.value)}
-                                            className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 pl-9 text-sm text-white focus:ring-2 focus:ring-indigo-500 outline-none appearance-none"
-                                        >
-                                            <option value="">Auto (Use Previous Scene)</option>
-                                            {previousSegmentsWithImages.map((seg, idx) => (
-                                                <option key={seg.id} value={seg.id}>
-                                                     Scene {segments.findIndex(s => s.id === seg.id) + 1}: {seg.text.substring(0, 30)}...
-                                                </option>
-                                            ))}
-                                        </select>
-                                        <History className="w-4 h-4 text-slate-500 absolute left-3 top-2.5 pointer-events-none" />
-                                    </div>
-                                    <p className="text-[10px] text-slate-500 leading-relaxed">
-                                        If the previous scene (N-1) showed a different character (e.g. Villain), select an older scene here to force the AI to copy the Main Character's outfit/items from that specific image.
-                                    </p>
-                                    
-                                    {/* Preview selected continuity image */}
-                                    {selectedContinuitySegmentId && (
-                                        <div className="mt-2 p-2 bg-slate-900 rounded-lg border border-slate-700 flex gap-3 items-center">
-                                            <div className="w-10 h-10 rounded overflow-hidden shrink-0 border border-slate-600">
-                                                <img 
-                                                    src={segments.find(s => s.id === selectedContinuitySegmentId)?.masterGridImageUrl} 
-                                                    className="w-full h-full object-cover" 
-                                                />
-                                            </div>
-                                            <div className="text-[10px] text-indigo-300">
-                                                <span className="font-bold">Active Reference:</span> Scene {segments.findIndex(s => s.id === selectedContinuitySegmentId) + 1}
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-
-                            {editingSegment.panels && editingSegment.panels.length > 0 && (
-                                <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700/50">
-                                     <div className="flex items-center justify-between mb-4">
-                                        <h4 className="text-xs font-bold text-indigo-400 uppercase tracking-widest flex items-center gap-2">
-                                            <FileText className="w-4 h-4" />
-                                            Beat Breakdown
-                                        </h4>
-                                        {onRegeneratePrompts && (
-                                            <button 
-                                                onClick={() => onRegeneratePrompts(editingSegment.id, selectedContinuitySegmentId || undefined)}
-                                                disabled={editingSegment.isGenerating}
-                                                className="text-[10px] font-bold text-slate-400 hover:text-white flex items-center gap-1 bg-slate-700/50 px-2 py-1 rounded hover:bg-indigo-600 transition-colors disabled:opacity-50"
-                                            >
-                                                {editingSegment.isGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
-                                                REFINE PROMPTS
-                                            </button>
-                                        )}
-                                     </div>
-                                     <div className="space-y-3">
-                                        {editingSegment.panels.map((panel, idx) => (
-                                            <div 
-                                                key={idx} 
-                                                onClick={() => setSelectedPanelIndex(idx)}
-                                                className={`flex gap-4 items-start p-3 rounded-lg border cursor-pointer transition-all
-                                                    ${selectedPanelIndex === idx 
-                                                        ? 'bg-indigo-900/30 border-indigo-500' 
-                                                        : 'bg-slate-900 border-slate-700 hover:border-slate-500'}
-                                                `}
-                                            >
-                                                <div className={`text-[10px] font-bold px-2 py-1 rounded uppercase shrink-0 mt-0.5 border
-                                                    ${idx === 0 ? 'bg-indigo-900/50 text-indigo-200 border-indigo-700' : 
-                                                      idx === 1 ? 'bg-indigo-900/50 text-indigo-200 border-indigo-700' : 
-                                                      idx === 2 ? 'bg-purple-900/50 text-purple-200 border-purple-700' : 
-                                                      'bg-purple-900/50 text-purple-200 border-purple-700'}`}>
-                                                    Beat {idx + 1}
-                                                </div>
-                                                <div className="space-y-2 w-full">
-                                                    <div className="flex items-center gap-2">
-                                                        {panel.caption ? (
-                                                            <p className="text-sm text-white font-serif italic">"{panel.caption}"</p>
-                                                        ) : (
-                                                            <p className="text-xs text-slate-500 flex items-center gap-1">
-                                                                <MicOff className="w-3 h-3" /> Silent Panel (Visual Only)
-                                                            </p>
-                                                        )}
-                                                    </div>
-                                                    <p className="text-[10px] text-slate-400 leading-tight border-l-2 border-slate-700 pl-2">
-                                                        <span className="font-bold text-slate-500">Visual:</span> {panel.visualPrompt}
-                                                    </p>
-                                                </div>
-                                            </div>
-                                        ))}
-                                     </div>
-                                </div>
-                            )}
-                            
-                            {editingSegment.choices && editingSegment.choices.length > 0 && (
-                                <div className="bg-indigo-900/20 rounded-xl p-6 border border-indigo-500/30">
-                                     <h4 className="text-xs font-bold text-indigo-400 uppercase tracking-widest mb-4 flex items-center gap-2">
-                                        <GitBranch className="w-4 h-4" />
-                                        Interactive Choices
-                                     </h4>
-                                     <div className="space-y-2">
-                                         {editingSegment.choices.map((choice, i) => (
-                                             <div key={i} className="bg-slate-900 p-3 rounded border border-slate-700 flex justify-between items-center">
-                                                 <span className="text-sm text-white font-bold">{choice.text}</span>
-                                                 <span className="text-[10px] text-slate-500 font-mono">ID: {choice.targetSegmentId}</span>
-                                             </div>
-                                         ))}
-                                     </div>
-                                </div>
-                            )}
-
-                            <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700/50">
-                                <h4 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
-                                    <Volume2 className="w-4 h-4 text-emerald-400" />
-                                    Narration Audio (Full Segment)
-                                </h4>
-                                
-                                <div className="flex items-center gap-4">
-                                     <button 
-                                        onClick={() => handleAudioClick(editingSegment.id, editingSegment.text)} 
-                                        disabled={generatingAudioId === editingSegment.id}
-                                        className={`flex-1 py-3 rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition-all
-                                            ${editingSegment.audioUrl 
-                                                ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-600/30 hover:bg-emerald-600/30' 
-                                                : 'bg-indigo-600 text-white hover:bg-indigo-500'}`}
-                                     >
-                                        {generatingAudioId === editingSegment.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-current" />}
-                                        {editingSegment.audioUrl ? 'Play Audio' : 'Generate Audio'}
-                                     </button>
-                                     
-                                     {editingSegment.audioUrl && (
-                                         <button onClick={() => onDeleteAudio(editingSegment.id)} className="p-3 bg-slate-700 hover:bg-red-500/20 hover:text-red-400 rounded-lg transition-colors text-slate-400">
-                                             <Trash2 className="w-4 h-4" />
-                                         </button>
-                                     )}
-                                </div>
-                            </div>
-
-                        </div>
-
-                    </div>
-                    
-                    <div className="p-4 border-t border-slate-800 bg-slate-950 flex justify-end">
-                        <button onClick={() => setEditingSegmentId(null)} className="px-6 py-2 bg-white text-slate-900 font-bold rounded-lg hover:bg-slate-200 transition-colors">
-                            Done
-                        </button>
-                    </div>
-                </div>
-            </div>,
-            document.body
-        )
-      )}
 
       {showPlayer && <SlideshowPlayer segments={segments} onClose={() => setShowPlayer(false)} onPlayAudio={onPlayAudio} onStopAudio={onStopAudio} />}
     </div>

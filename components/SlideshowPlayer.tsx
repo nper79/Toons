@@ -38,13 +38,14 @@ const SlideshowPlayer: React.FC<SlideshowPlayerProps> = ({
     const panels: { segmentId: string; beatIndex: number; imageUrl: string; caption: string; isFirstBeat: boolean; segment: StorySegment }[] = [];
     
     segments.forEach((seg) => {
-        for (let i = 0; i < 4; i++) {
+        const panelCount = Math.max(seg.panels?.length || 0, seg.generatedImageUrls?.length || 0, 1);
+        for (let i = 0; i < panelCount; i++) {
             const img = (seg.generatedImageUrls && seg.generatedImageUrls[i]) || seg.masterGridImageUrl || '';
             panels.push({
                 segmentId: seg.id,
                 beatIndex: i,
                 imageUrl: img,
-                caption: seg.panels?.[i]?.caption || (i === 3 ? seg.text : ""),
+                caption: seg.panels?.[i]?.caption || (i === panelCount - 1 ? seg.text : ""),
                 isFirstBeat: i === 0,
                 segment: seg
             });
@@ -115,6 +116,7 @@ const SlideshowPlayer: React.FC<SlideshowPlayerProps> = ({
 
   const currentPanelData = allPanels.find(p => p.segmentId === activeSegmentId && p.beatIndex === activeBeatIndex) || allPanels[0];
   const activeSeg = segments.find(s => s.id === activeSegmentId);
+  const activePanelCount = Math.max(activeSeg?.panels?.length || 0, activeSeg?.generatedImageUrls?.length || 0, 1);
 
   return createPortal(
     <div className="fixed inset-0 z-[10000] bg-black text-white flex flex-col overflow-hidden">
@@ -221,7 +223,7 @@ const SlideshowPlayer: React.FC<SlideshowPlayerProps> = ({
           )}
           
           {/* Choice Gate: If the current panel has choices, show them floating above */}
-          {activeBeatIndex === 3 && activeSeg?.choices && activeSeg.choices.length > 0 && (
+          {activeBeatIndex === activePanelCount - 1 && activeSeg?.choices && activeSeg.choices.length > 0 && (
               <div className="w-full max-w-sm mt-4 animate-fade-in pointer-events-auto">
                    <div className="bg-slate-900/95 backdrop-blur-3xl border border-indigo-500/30 rounded-2xl p-4 shadow-2xl">
                         <div className="flex items-center gap-2 mb-3 opacity-60">

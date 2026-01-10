@@ -1,17 +1,20 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Layout, Clapperboard, Layers, ChevronRight, ExternalLink, Download, Upload, XCircle, CheckCircle, Info, AlertTriangle, Users, BookOpen, PenTool, Languages, Home as HomeIcon, Plus, Palette, Book, Globe, Library, FileText, Image as ImageIcon, Zap } from 'lucide-react';
+import { ChevronRight, Download, Upload, XCircle, CheckCircle, Info, AlertTriangle, Users, BookOpen, PenTool, Languages, Home as HomeIcon, Palette, Book, Globe, Library, FileText, Image as ImageIcon, Zap } from 'lucide-react';
 import StoryInput from './components/StoryInput';
 import AssetGallery from './components/AssetGallery';
 import Storyboard from './components/Storyboard';
 import { StoryData, StorySegment, ProcessingStatus, AspectRatio, ImageSize, TranslationCache } from './types';
 import * as GeminiService from './services/geminiService';
 import * as StorageService from './services/storageService';
-import { cropGridCell, compressImage } from './utils/imageUtils';
+import { compressImage } from './utils/imageUtils';
 import SlideshowPlayer from './components/SlideshowPlayer';
+import WebtoonReader from './components/WebtoonReader';
+import BeatMaker from './components/BeatMaker';
 
 enum View {
   STUDIO = 'STUDIO',
-  FRONTEND = 'FRONTEND'
+  FRONTEND = 'FRONTEND',
+  BEATMAKER = 'BEATMAKER'
 }
 
 enum Tab {
@@ -50,6 +53,7 @@ export default function App() {
   const [isTranslating, setIsTranslating] = useState(false);
   const [readerData, setReaderData] = useState<StoryData | null>(null); // translated data for reader
   const [showReader, setShowReader] = useState(false);
+  const [readerFormat, setReaderFormat] = useState<'immersive' | 'webtoon'>('webtoon'); // NEW: Reader format selection
 
   // Batch Translation State
   const [isBatchTranslating, setIsBatchTranslating] = useState(false);
@@ -81,11 +85,15 @@ export default function App() {
     try {
       // In Studio mode, we just analyze structure. Translation happens in Frontend.
       const data = await GeminiService.analyzeStoryText(text, style);
+      if (!data.segments || data.segments.length === 0) {
+          throw new Error("No segments returned.");
+      }
+
       const initializedSegments = data.segments.map(s => ({
           ...s,
-          selectedGridIndices: [],
-          generatedImageUrls: [],
-          translations: {} // Initialize translation cache
+          selectedGridIndices: s.selectedGridIndices || [],
+          generatedImageUrls: s.generatedImageUrls || [],
+          translations: s.translations || {} // Initialize translation cache
       }));
       setStoryData({ 
           ...data, 
@@ -99,15 +107,20 @@ export default function App() {
       setActiveTab(Tab.ASSETS);
       addToast("Story generated successfully.", "success");
     } catch (error: any) {
+      console.error("Analysis error:", error);
       setStatus(ProcessingStatus.ERROR);
-      setError("Analysis failed. Try shortening the text.");
-      addToast("Analysis failed.", "error");
+      const errorMsg = error?.message || "Unknown error";
+      setError(`Analysis failed: ${errorMsg}. Check browser console for details.`);
+      addToast(`Analysis failed: ${errorMsg}`, "error");
     }
   };
 
   const handleReAnalyze = async () => {
       if (!storyData) return;
-      const fullText = storyData.segments.map(s => s.text).join('\n\n');
+      const fullText = storyData.segments
+          .map(s => s.text)
+          .filter(text => text && text.trim().length > 0)
+          .join('\n\n');
       await handleAnalyzeStory(fullText, storyData.artStyle);
   };
 
@@ -134,11 +147,10 @@ export default function App() {
          try {
              addToast(`Translating to ${targetLang}... (${completedCount + 1}/${languagesToTranslate.length})`, "info");
              
-             // Check if all segments already have this language (avoid re-translating if fully cached)
-             const needsTranslation = updatedSegments.some(s => !s.translations?.[targetLang]);
+             const segmentsToTranslate = updatedSegments.filter(s => hasTranslatableContent(s) && !s.translations?.[targetLang]);
              
-             if (needsTranslation) {
-                 const translatedResults = await GeminiService.translateSegments(updatedSegments, targetLang);
+             if (segmentsToTranslate.length > 0) {
+                 const translatedResults = await GeminiService.translateSegments(segmentsToTranslate, targetLang);
                  
                  // Merge results into the segments' translation map
                  updatedSegments = updatedSegments.map(seg => {
@@ -283,7 +295,15 @@ export default function App() {
       }
   };
 
+  const hasTranslatableContent = (segment: StorySegment) => {
+    if (segment.text && segment.text.trim().length > 0) return true;
+    if (segment.panels?.some(p => (p.caption || '').trim().length > 0)) return true;
+    if (segment.choices?.some(c => (c.text || '').trim().length > 0)) return true;
+    return false;
+  };
+
   const hasUsableTranslation = (segment: StorySegment, language: string) => {
+    if (!hasTranslatableContent(segment)) return true;
     const cache = segment.translations?.[language];
     if (!cache || typeof cache.text !== 'string' || cache.text.trim().length === 0) return false;
 
@@ -331,7 +351,7 @@ export default function App() {
     setIsTranslating(true);
     
     try {
-        const segmentsMissingTranslation = storyData.segments.filter(s => !hasUsableTranslation(s, learningLanguage));
+        const segmentsMissingTranslation = storyData.segments.filter(s => hasTranslatableContent(s) && !hasUsableTranslation(s, learningLanguage));
         let updatedSegments = storyData.segments;
 
         if (segmentsMissingTranslation.length === 0) {
@@ -501,257 +521,151 @@ export default function App() {
     }
   };
 
-  const handleRegeneratePrompts = async (segmentId: string, continuitySegmentId?: string) => {
-      if (!storyData) return;
-      setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, isGenerating: true } : s) }) : null);
-      addToast("Analyzing scene for continuity and spatial accuracy...", "info");
-      
-      try {
-          const segmentIndex = storyData.segments.findIndex(s => s.id === segmentId);
-          if (segmentIndex === -1) throw new Error("Segment not found");
-          
-          const segment = storyData.segments[segmentIndex];
-          
-          // Get context info
-          let context = `Characters: ${segment.characterIds.map(id => storyData.characters.find(c => c.id === id)?.name).join(', ')}. `;
-          const setting = storyData.settings.find(s => s.id === segment.settingId);
-          if (setting) { context += `Location: ${setting.name}. SPATIAL BLUEPRINT: ${setting.spatialLayout}.`; }
-          
-          const fullStoryText = storyData.segments.map(s => s.text).join('\n\n');
-          
-          // --- GET CONTINUITY DATA ---
-          let prevImage = undefined;
-          let prevText = undefined;
-
-          // 1. Check for Manual Override
-          if (continuitySegmentId) {
-              const continuitySeg = storyData.segments.find(s => s.id === continuitySegmentId);
-              if (continuitySeg) {
-                  prevText = continuitySeg.text;
-                  if (continuitySeg.masterGridImageUrl) {
-                      prevImage = continuitySeg.masterGridImageUrl;
-                  }
-              }
-          } 
-          // 2. Default to N-1
-          else if (segmentIndex > 0) {
-              const prevSeg = storyData.segments[segmentIndex - 1];
-              prevText = prevSeg.text;
-              if (prevSeg.masterGridImageUrl) {
-                  prevImage = prevSeg.masterGridImageUrl;
-              }
-          }
-
-          const newPanels = await GeminiService.regeneratePanelPrompts(
-              segment.text, 
-              fullStoryText, 
-              storyData.artStyle, 
-              context,
-              prevImage, // Pass image (either override or N-1)
-              prevText   // Pass text
-          );
-          
-          setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, panels: newPanels, isGenerating: false } : s) }) : null);
-          addToast("Continuity check complete. Prompts refined.", "success");
-      } catch (e) {
-           setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, isGenerating: false } : s) }) : null);
-           addToast("Prompt refinement failed.", "error");
-      }
+  const getLastGeneratedImage = (segment: StorySegment) => {
+    const urls = segment.generatedImageUrls || [];
+    for (let i = urls.length - 1; i >= 0; i--) {
+        const url = urls[i];
+        if (url && url.trim().length > 0) return url;
+    }
+    if (segment.masterGridImageUrl && segment.masterGridImageUrl.trim().length > 0) {
+        return segment.masterGridImageUrl;
+    }
+    return undefined;
   };
 
-  // NEW: Handle Single Panel Regeneration
-  const handleRegenerateSinglePanel = async (segmentId: string, panelIndex: number, instruction: string) => {
-      if (!storyData) return;
-      
-      // Update state to show loading on UI (optional, but handled by component local state mostly)
-      addToast(`Regenerating Panel #${panelIndex + 1}...`, "info");
-      
-      try {
-          const segment = storyData.segments.find(s => s.id === segmentId);
-          if (!segment || !segment.panels || !segment.panels[panelIndex]) throw new Error("Panel not found");
-          
-          const originalPrompt = segment.panels[panelIndex].visualPrompt;
-          
-          // 1. Construct Enhanced Prompt with Instruction
-          const refinedPrompt = `
-          [ORIGINAL VISUAL CONTEXT]: ${originalPrompt}
-          
-          [USER CORRECTION INSTRUCTION]: ${instruction}
-          
-          [ACTION]: Modify the original visual to strictly follow the User Correction while maintaining the same art style, character consistency, and environment.
-          `;
-          
-          // 2. Gather References
-          const refImages: string[] = [];
-          if (segment.characterIds && segment.characterIds.length > 0) {
-             segment.characterIds.forEach(charId => {
-                  const char = storyData.characters.find(c => c.id === charId);
-                  if (char && char.imageUrl) refImages.push(char.imageUrl);
-             });
-          }
-          const setting = storyData.settings.find(s => s.id === segment.settingId);
-          if (setting && setting.imageUrl) refImages.push(setting.imageUrl);
-
-          // 3. Generate Single Image (Using the Panel Prompt directly)
-          // We use PORTRAIT aspect ratio for individual panels usually, or match what the grid cell was.
-          // Since the master grid is 9:16, a 2x2 cell is roughly 4.5:8 (~9:16).
-          // We'll stick to MOBILE (9:16) for individual vertical panels or SQUARE for ease. 
-          // Let's use MOBILE to match the verticality of a webtoon panel.
-          const newImageUrl = await GeminiService.generateImage(
-              refinedPrompt, 
-              AspectRatio.MOBILE, 
-              ImageSize.K1, 
-              refImages, 
-              storyData.visualStyleGuide, 
-              storyData.cinematicDNA, 
-              false // No grid mode, single image
-          );
-          
-          // 4. Update the Data Structure
-          setStoryData(prev => {
-              if (!prev) return null;
-              return {
-                  ...prev,
-                  segments: prev.segments.map(s => {
-                      if (s.id !== segmentId) return s;
-                      
-                      // Clone generatedImageUrls or init if missing
-                      const newImageUrls = [...(s.generatedImageUrls || [])];
-                      // Ensure array is big enough if we are generating index 3 but only have 0
-                      while(newImageUrls.length <= panelIndex) newImageUrls.push(s.masterGridImageUrl || "");
-                      
-                      newImageUrls[panelIndex] = newImageUrl;
-                      
-                      // Also update the text visualPrompt so future regenerations might remember? 
-                      // (Optional, but good for record keeping)
-                      const newPanels = [...s.panels];
-                      newPanels[panelIndex] = {
-                          ...newPanels[panelIndex],
-                          visualPrompt: `${originalPrompt} (Modified: ${instruction})`
-                      };
-
-                      return {
-                          ...s,
-                          generatedImageUrls: newImageUrls,
-                          panels: newPanels
-                      };
-                  })
-              };
-          });
-          
-          addToast("Panel regenerated successfully.", "success");
-
-      } catch (e) {
-          addToast("Failed to regenerate panel.", "error");
-          console.error(e);
-      }
+  const getSceneTextForPanel = (segment: StorySegment, panelIndex: number) => {
+    const panel = segment.panels?.[panelIndex];
+    const caption = panel?.caption;
+    if (caption && caption.trim().length > 0) return caption;
+    if (segment.text && segment.text.trim().length > 0) return segment.text;
+    const visualPrompt = panel?.visualPrompt;
+    if (visualPrompt && visualPrompt.trim().length > 0) return visualPrompt;
+    if (segment.scenePrompt && segment.scenePrompt.trim().length > 0) return segment.scenePrompt;
+    return '';
   };
 
-  const handleGenerateScene = async (segmentId: string, options: { aspectRatio: AspectRatio, imageSize: ImageSize, referenceViewUrl?: string, continuitySegmentId?: string, locationContinuityUrls?: string[] }) => {
+  // Cache for establishing shots per location (settingId -> imageUrl)
+  const establishingShotsRef = useRef<Record<string, string>>({});
+
+  const handleGenerateScene = async (segmentId: string) => {
     if (!storyData) return;
+    const segmentIndex = storyData.segments.findIndex(s => s.id === segmentId);
+    if (segmentIndex < 0) return;
+
     setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, isGenerating: true } : s) }) : null);
+    addToast("🎬 Starting progressive scene generation...", "info");
+
     try {
-      const segment = storyData.segments.find(s => s.id === segmentId);
-      if (!segment) throw new Error("Segment not found");
-      const setting = storyData.settings.find(s => s.id === segment.settingId);
-      let generalSettingPrompt = "";
-      let settingColors = "Neutral cinematic lighting";
-      if (setting) {
-          generalSettingPrompt = `\n\n[LOCATION]: ${setting.name}. ${setting.spatialLayout}.`;
-          if (setting.colorPalette) settingColors = setting.colorPalette;
-      }
-      
-      const refImages: string[] = [];
-      
-      // 1. ADD CONTINUITY IMAGE (Manual Override OR Default N-1)
-      let continuityImage: string | undefined = undefined;
-      let locationContinuityImages: string[] = []; // NEW ARRAY
-      
-      // A. Location Continuity (Multi-select)
-      if (options.locationContinuityUrls && options.locationContinuityUrls.length > 0) {
-          locationContinuityImages = options.locationContinuityUrls;
-      } else if (options.referenceViewUrl) {
-           refImages.push(options.referenceViewUrl);
-      }
+      const segment = storyData.segments[segmentIndex];
+      const fullStoryText = storyData.segments
+          .map(s => s.text)
+          .filter(text => text && text.trim().length > 0)
+          .join('\n\n');
 
-      // B. Action Continuity
-      if (options.continuitySegmentId) {
-          // Manual Override
-          const continuitySeg = storyData.segments.find(s => s.id === options.continuitySegmentId);
-          if (continuitySeg?.masterGridImageUrl) continuityImage = continuitySeg.masterGridImageUrl;
-      } else {
-          // Default: Check N-1
-          const segmentIndex = storyData.segments.findIndex(s => s.id === segmentId);
-          if (segmentIndex > 0) {
-              const prevSeg = storyData.segments[segmentIndex - 1];
-              if (prevSeg.masterGridImageUrl) continuityImage = prevSeg.masterGridImageUrl;
-          }
-      }
+      // Gather character info
+      const characterRefs: string[] = [];
+      const characterDescriptions: { name: string; description: string }[] = [];
 
-      let charPrompt = "\n\n[CHARACTERS]:";
-      let characterInjection = "";
       if (segment.characterIds && segment.characterIds.length > 0) {
           segment.characterIds.forEach(charId => {
               const char = storyData.characters.find(c => c.id === charId);
-              if (char) {
-                  charPrompt += `\n- ${char.name}: ${char.description}`;
-                  characterInjection += ` ${char.name} is wearing: ${char.description}. `; 
-                  if (char.imageUrl) refImages.push(char.imageUrl);
-              }
+              if (!char) return;
+              characterDescriptions.push({ name: char.name, description: char.description });
+              if (char.imageUrl) characterRefs.push(char.imageUrl);
           });
       }
-      const gridVariations = segment.panels ? segment.panels.map((p, idx) => {
-         const isEstablishing = p.shotType === 'ESTABLISHING' || idx === 0;
-         if (isEstablishing) {
-             return `Panel ${idx+1} [ESTABLISHING SHOT]: ${p.visualPrompt}. SUBJECT DETAILS: ${characterInjection}. Wide angle. SHOW FULL ARCHITECTURE. ${generalSettingPrompt}. LIGHTING: Bright, well-lit scene. Ensure ${characterInjection} is clearly visible and NOT in silhouette.`;
-         } else {
-             return `Panel ${idx+1} [ISOLATION SHOT]: ${p.visualPrompt}. SUBJECT DETAILS: ${characterInjection}. CRITICAL RULE: DO NOT DRAW THE ROOM. - Focus ONLY on the Subject. - Background MUST BE: Abstract Blur / Bokeh / Dark Void / Speed Lines. - Color Palette: ${settingColors}. - NO furniture, NO windows, NO doors. - COSTUME: Match the description "${characterInjection}" exactly.`;
-         }
-      }) : [];
-      if (setting && setting.imageUrl) refImages.push(setting.imageUrl);
-      
-      // Handle Authorized View Option (If not using Location Continuity History)
-      // Done above in block A logic
 
-      // CALL API
-      const masterGridUrl = await GeminiService.generateImage(
-          `Story Segment: ${segment.text} ${charPrompt}`, 
-          options.aspectRatio, 
-          options.imageSize, 
-          refImages, 
-          storyData.visualStyleGuide, 
-          storyData.cinematicDNA, 
-          true, 
-          gridVariations,
-          continuityImage, // Pass the specific continuity image here (Action)
-          locationContinuityImages // Pass the ARRAY of location images here (Environment)
-      );
-      
-      const croppedImages = await Promise.all([0,1,2,3].map(i => cropGridCell(masterGridUrl, i)));
-      setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, masterGridImageUrl: masterGridUrl, selectedGridIndices: [0, 1, 2, 3], generatedImageUrls: croppedImages, isGenerating: false } : s) }) : null);
+      // Gather setting info
+      const setting = storyData.settings.find(s => s.id === segment.settingId);
+      const settingRef = setting?.imageUrl;
+      const settingDescription = setting ? `${setting.name}: ${setting.description}` : undefined;
+
+      // Get previous scene info for continuity
+      let previousSceneImage: string | undefined = undefined;
+      let previousSceneText: string | undefined = undefined;
+      if (segmentIndex > 0) {
+          const prevSegment = storyData.segments[segmentIndex - 1];
+          previousSceneImage = getLastGeneratedImage(prevSegment);
+          previousSceneText = prevSegment.text;
+      }
+
+      // Get establishing shot for this location (if exists)
+      const locationId = segment.settingId || 'default';
+      const existingEstablishingShot = establishingShotsRef.current[locationId];
+
+      const panelCount = segment.panels && segment.panels.length > 0 ? segment.panels.length : 1;
+      const generatedImageUrls: string[] = new Array(panelCount).fill("");
+      const totalPanels = storyData.segments.length;
+
+      for (let i = 0; i < panelCount; i++) {
+          const panel = segment.panels?.[i];
+          const sceneText = getSceneTextForPanel(segment, i);
+          if (!sceneText || sceneText.trim().length === 0) continue;
+
+          // Get background type from panel, default to BOKEH (standard webtoon style)
+          const backgroundType = panel?.backgroundType || 'BOKEH';
+          const cameraAngle = panel?.cameraAngle || 'THREE_QUARTER';
+
+          // Check if this is the first panel in a new location
+          const isFirstPanelInLocation = backgroundType === 'DETAILED' && !existingEstablishingShot;
+
+          addToast(`🔍 Analyzing scene ${segmentIndex + 1} for continuity...`, "info");
+
+          // Use the new progressive generation system
+          const result = await GeminiService.generateSceneImageProgressive({
+              currentSceneText: sceneText,
+              fullStoryContext: fullStoryText,
+              previousSceneImage,
+              previousSceneText,
+              characterRefs,
+              characterDescriptions,
+              settingRef,
+              settingDescription,
+              panelNumber: segmentIndex + 1,
+              totalPanels,
+              suggestedCameraAngle: cameraAngle,
+              suggestedBackgroundType: backgroundType,
+              isFirstPanelInLocation,
+              globalStyle: storyData.visualStyleGuide
+          });
+
+          generatedImageUrls[i] = result.imageUrl;
+
+          // Update previous scene for next iteration
+          previousSceneImage = result.imageUrl;
+          previousSceneText = sceneText;
+
+          // Store as establishing shot if it was a DETAILED background
+          if (isFirstPanelInLocation && result.imageUrl) {
+              establishingShotsRef.current[locationId] = result.imageUrl;
+              console.log(`Stored establishing shot for location: ${locationId}`);
+          }
+
+          // Log the detailed prompt used
+          console.log(`\n📋 Panel ${segmentIndex + 1} generated with prompt:`, result.usedPrompt);
+      }
+
+      const primaryImage = generatedImageUrls.find(url => url && url.trim().length > 0);
+      const selectedGridIndices = generatedImageUrls
+          .map((url, idx) => (url && url.trim().length > 0 ? idx : -1))
+          .filter(idx => idx >= 0);
+
+      setStoryData(prev => prev ? ({
+          ...prev,
+          segments: prev.segments.map(s => s.id === segmentId ? {
+              ...s,
+              masterGridImageUrl: primaryImage || s.masterGridImageUrl,
+              generatedImageUrls,
+              selectedGridIndices,
+              isGenerating: false
+          } : s)
+      }) : null);
+      addToast("✅ Scene generated with progressive analysis!", "success");
     } catch (e: any) {
+       console.error("Scene generation failed:", e);
        setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, isGenerating: false } : s) }) : null);
-       addToast("Visual generation failed.", "error");
+       addToast("Visual generation failed: " + (e?.message || "Unknown error"), "error");
     }
-  };
-
-  const handleSelectOption = async (segmentId: string, optionIndex: number) => {
-    if (!storyData) return;
-    const segment = storyData.segments.find(s => s.id === segmentId);
-    if (!segment || !segment.masterGridImageUrl) return;
-    try {
-        let newIndices = [...(segment.selectedGridIndices || [])];
-        if (newIndices.includes(optionIndex)) newIndices = newIndices.filter(i => i !== optionIndex);
-        else newIndices.push(optionIndex);
-        newIndices.sort((a,b) => a-b);
-        const newImages = await Promise.all(newIndices.map(async (idx) => await cropGridCell(segment.masterGridImageUrl!, idx)));
-        setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, selectedGridIndices: newIndices, generatedImageUrls: newImages } : s) }) : null);
-    } catch (e) { console.error(e); }
-  };
-
-  const handleDeleteAudio = (segmentId: string) => {
-     if (!storyData) return;
-     setStoryData(prev => prev ? ({ ...prev, segments: prev.segments.map(s => s.id === segmentId ? { ...s, audioUrl: undefined, audioDuration: undefined } : s) }) : null);
   };
 
   const handleGenerateAndPlayAudio = async (segmentId: string, text: string): Promise<void> => {
@@ -848,13 +762,19 @@ export default function App() {
               <div className="h-6 w-px bg-slate-700 hidden md:block"></div>
               
               <div className="flex bg-slate-900 rounded-lg p-1 border border-slate-700">
-                  <button 
+                  <button
                     onClick={() => setCurrentView(View.FRONTEND)}
                     className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${currentView === View.FRONTEND ? 'bg-white text-slate-900 shadow' : 'text-slate-400 hover:text-white'}`}
                   >
                       <HomeIcon className="w-3.5 h-3.5" /> Reader
                   </button>
-                  <button 
+                  <button
+                    onClick={() => setCurrentView(View.BEATMAKER)}
+                    className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${currentView === View.BEATMAKER ? 'bg-gradient-to-r from-rose-500 to-orange-500 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+                  >
+                      <Zap className="w-3.5 h-3.5" /> Beat Maker
+                  </button>
+                  <button
                     onClick={() => setCurrentView(View.STUDIO)}
                     className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${currentView === View.STUDIO ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
                   >
@@ -994,7 +914,7 @@ export default function App() {
                                  )}
                              </div>
                              <div className="relative">
-                                <select 
+                                <select
                                     value={learningLanguage}
                                     onChange={(e) => setLearningLanguage(e.target.value)}
                                     className="w-full bg-slate-900 border border-indigo-500/30 rounded-xl px-4 py-4 text-lg font-bold text-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none appearance-none"
@@ -1010,7 +930,7 @@ export default function App() {
                         <div className="space-y-2">
                              <label className="text-xs font-bold text-emerald-300 uppercase tracking-wider">I speak (Native Language)</label>
                              <div className="relative">
-                                <select 
+                                <select
                                     value={nativeLanguage}
                                     onChange={(e) => setNativeLanguage(e.target.value)}
                                     className="w-full bg-slate-900 border border-emerald-500/30 rounded-xl px-4 py-4 text-lg font-bold text-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none appearance-none"
@@ -1021,6 +941,35 @@ export default function App() {
                                 </select>
                                 <ChevronRight className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 rotate-90" />
                              </div>
+                        </div>
+                    </div>
+
+                    {/* Reader Format Toggle */}
+                    <div className="mt-6 pt-6 border-t border-slate-700">
+                        <label className="text-xs font-bold text-amber-300 uppercase tracking-wider mb-3 block">Reader Format</label>
+                        <div className="flex gap-3">
+                            <button
+                                onClick={() => setReaderFormat('webtoon')}
+                                className={`flex-1 p-4 rounded-xl border transition-all ${
+                                    readerFormat === 'webtoon'
+                                        ? 'bg-amber-500/20 border-amber-500 text-amber-300'
+                                        : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-600'
+                                }`}
+                            >
+                                <div className="text-lg font-bold mb-1">Webtoon</div>
+                                <div className="text-xs opacity-70">Classic vertical scroll, text between panels</div>
+                            </button>
+                            <button
+                                onClick={() => setReaderFormat('immersive')}
+                                className={`flex-1 p-4 rounded-xl border transition-all ${
+                                    readerFormat === 'immersive'
+                                        ? 'bg-indigo-500/20 border-indigo-500 text-indigo-300'
+                                        : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-600'
+                                }`}
+                            >
+                                <div className="text-lg font-bold mb-1">Immersive</div>
+                                <div className="text-xs opacity-70">Fullscreen dark mode, floating captions</div>
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -1081,42 +1030,64 @@ export default function App() {
         {currentView === View.STUDIO && (
             <>
                 {activeTab === Tab.INPUT && <StoryInput onAnalyze={handleAnalyzeStory} status={status} selectedVoice={selectedVoice} onVoiceChange={setSelectedVoice} />}
-                {activeTab === Tab.ASSETS && storyData && <AssetGallery 
-                    characters={storyData.characters} 
-                    settings={storyData.settings} 
+                {activeTab === Tab.ASSETS && storyData && <AssetGallery
+                    characters={storyData.characters}
+                    settings={storyData.settings}
                     cover={storyData.cover}
-                    onGenerateCharacter={handleGenerateCharacter} 
+                    onGenerateCharacter={handleGenerateCharacter}
                     onGenerateSetting={handleGenerateSetting}
                     onGenerateCover={handleGenerateCover}
-                    onUploadAsset={handleUploadAsset} 
+                    onUploadAsset={handleUploadAsset}
                 />}
-                {activeTab === Tab.STORYBOARD && storyData && <Storyboard 
-                    segments={storyData.segments} 
-                    settings={storyData.settings} 
-                    onGenerateScene={handleGenerateScene} 
-                    onGenerateVideo={(id, idx) => addToast("Video Generation available in next update", "info")}
-                    onSelectOption={handleSelectOption} 
-                    onPlayAudio={handleGenerateAndPlayAudio} 
-                    onStopAudio={handleStopAudio} 
-                    onDeleteAudio={handleDeleteAudio}
-                    onRegeneratePrompts={handleRegeneratePrompts}
-                    onRegenerateSinglePanel={handleRegenerateSinglePanel}
+                {activeTab === Tab.STORYBOARD && storyData && <Storyboard
+                    segments={storyData.segments}
+                    onGenerateScene={handleGenerateScene}
+                    onPlayAudio={handleGenerateAndPlayAudio}
+                    onStopAudio={handleStopAudio}
                 />}
             </>
         )}
 
-        {/* Slideshow Reader (triggered from Frontend) */}
+        {/* BEAT MAKER VIEW */}
+        {currentView === View.BEATMAKER && (
+            <div className="h-[calc(100vh-8rem)]">
+                <BeatMaker
+                    initialText={storyData?.segments.map(s => s.text).filter(Boolean).join(' ') || ''}
+                    onSegmentsReady={(segments) => {
+                        if (storyData) {
+                            setStoryData({ ...storyData, segments });
+                            addToast("Beats exported to storyboard!", "success");
+                            setCurrentView(View.STUDIO);
+                            setActiveTab(Tab.STORYBOARD);
+                        }
+                    }}
+                />
+            </div>
+        )}
+
+        {/* Reader (triggered from Frontend) - Shows Webtoon or Immersive based on selection */}
         {showReader && readerData && (
-             <SlideshowPlayer 
-                segments={readerData.segments} 
-                onClose={() => setShowReader(false)} 
-                onPlayAudio={handleGenerateAndPlayAudio} 
-                onStopAudio={handleStopAudio}
-                nativeLanguage={nativeLanguage}
-                learningLanguage={readerData.learningLanguage}
-                // Pass the global vocabulary so the reader can use it offline
-                vocabulary={storyData.vocabulary}
-             />
+            readerFormat === 'webtoon' ? (
+                <WebtoonReader
+                    segments={readerData.segments}
+                    onClose={() => setShowReader(false)}
+                    onPlayAudio={handleGenerateAndPlayAudio}
+                    onStopAudio={handleStopAudio}
+                    nativeLanguage={nativeLanguage}
+                    learningLanguage={readerData.learningLanguage}
+                    vocabulary={storyData?.vocabulary}
+                />
+            ) : (
+                <SlideshowPlayer
+                    segments={readerData.segments}
+                    onClose={() => setShowReader(false)}
+                    onPlayAudio={handleGenerateAndPlayAudio}
+                    onStopAudio={handleStopAudio}
+                    nativeLanguage={nativeLanguage}
+                    learningLanguage={readerData.learningLanguage}
+                    vocabulary={storyData?.vocabulary}
+                />
+            )
         )}
       </main>
     </div>

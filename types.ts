@@ -43,14 +43,24 @@ export interface CinematicDNA {
   visualMood: string;
 }
 
-export type ShotType = 'ESTABLISHING' | 'CHARACTER' | 'ACTION' | 'DETAIL';
+export type ShotType = 'ESTABLISHING' | 'CHARACTER' | 'ACTION' | 'DETAIL' | 'CLOSE-UP';
+
+// NEW: Background rendering strategy for manhwa-style panels
+export type BackgroundType =
+  | 'DETAILED'    // Full environment (establishing shots, scene transitions)
+  | 'WHITE'       // Pure white/cream background (rare, only for pure dialogue)
+  | 'GRADIENT'    // Soft gradient/vignette (emotional moments, most dialogue)
+  | 'BOKEH'       // Blurred background (intimate scenes, close-ups, DEFAULT for dialogue)
+  | 'SPEEDLINES'  // Action lines/screen tones (dramatic moments)
+  | 'SPLIT';      // Split panel with 2 characters/actions side by side
 
 export interface ManhwaPanel {
   panelIndex: number;
-  visualPrompt: string; 
-  caption: string; 
+  visualPrompt: string;
+  caption: string;
   cameraAngle: string;
-  shotType?: ShotType; // NEW: Determines if we use the Blur Trick
+  shotType?: ShotType;
+  backgroundType?: BackgroundType; // NEW: Controls background rendering strategy
 }
 
 export interface StructuredScene {
